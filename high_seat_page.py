@@ -923,8 +923,30 @@ def _comms_pulse_html(ctx):
         + "; window.ANCHOR_CAVE_COMMS_BOOT = "
         + json.dumps(cave_comms_boot).replace("</", "<\\/")
     )
-    sr_open_cls = " open" if sr_queue else ""
-    sr_body_hidden = "" if sr_queue else " hidden"
+    sr_counts_init = _cc.compute_scribe_queue_counts(sr_state) if hasattr(_cc, "compute_scribe_queue_counts") else {"pending": 0, "ready": len(sr_queue), "total": len(sr_queue)}
+    sr_pending_n = int(sr_counts_init.get("pending") or 0)
+    sr_ready_n = int(sr_counts_init.get("ready") or 0)
+    if sr_pending_n > 0:
+        sq_state_attr = "active"
+        sq_style = "display:inline-flex;align-items:center;gap:5px;padding:2px 9px;font-size:11px;font-weight:800;border:1px solid rgba(245,158,11,0.65);background:rgba(245,158,11,0.18);color:#fde68a;border-radius:999px;white-space:nowrap"
+        sq_label = f"&#9203; Scribe Queue &middot; {sr_pending_n} drafting" + (f" ({sr_ready_n} ready)" if sr_ready_n else "")
+    elif sr_ready_n > 0:
+        sq_state_attr = "ready"
+        sq_style = "display:inline-flex;align-items:center;gap:5px;padding:2px 9px;font-size:11px;font-weight:750;border:1px solid rgba(16,185,129,0.55);background:rgba(16,185,129,0.16);color:#a7f3d0;border-radius:999px;white-space:nowrap"
+        sq_label = f"&#9203; Scribe Queue &middot; {sr_ready_n} ready"
+    else:
+        sq_state_attr = "idle"
+        sq_style = "display:inline-flex;align-items:center;gap:5px;padding:2px 9px;font-size:11px;font-weight:700;border:1px solid rgba(56,189,248,0.45);background:rgba(56,189,248,0.12);color:#bae6fd;border-radius:999px;white-space:nowrap"
+        sq_label = "&#9203; Scribe Queue &middot; 0"
+    scribe_queue_pill_html = (
+        f'<span class="comms-pill cave-scribe-queue-pill" id="caveScribeQueuePill" '
+        f'data-scribe-queue-state="{sq_state_attr}" data-scribe-queue-pending="{sr_pending_n}" '
+        f'data-scribe-queue-ready="{sr_ready_n}" style="{sq_style}" '
+        f'title="Non-blocking FIFO Scribe Drafting Queue">{sq_label}</span>'
+    )
+    cal_open_init_cls = " open" if ctx.get("comms_open") else ""
+    sr_open_cls = " open" if (sr_ready_n > 0 and not ctx.get("comms_open")) else ""
+    sr_body_hidden = "" if (sr_ready_n > 0 and not ctx.get("comms_open")) else " hidden"
     sr_prompt_bar_attrs = (
         ' style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;background:#111622;border:1px solid #2b3548;padding:6px 10px;border-radius:7px;font-size:11.5px"'
     )
@@ -1539,7 +1561,7 @@ def _comms_pulse_html(ctx):
     )
 
     return (
-        '<section class="cal" id="cal" data-comms-pulse="1" data-connected-count="%d">'
+        '<section class="cal' + cal_open_init_cls + '" id="cal" data-comms-pulse="1" data-connected-count="%d">'
         '<div class="cal-h cal-two-line" id="calHead">'
         '<span class="sr" id="commsStateBadge">%s</span>'
         '<div class="cal-2line-rows">'
@@ -1765,6 +1787,7 @@ def _comms_pulse_html(ctx):
         '<button type="button" class="tw-btn cave-btab" id="btnCaveMailFolderActed" data-cave-mail-folder="acted" title="Emails answered, moved to Speed Racer, or marked Seen/Done">&#9745; Acted (<span id="caveActedCountBadge">%d</span>)</button>'
         '<button type="button" class="tw-btn cave-btab" id="btnCaveMailFolderSent" data-cave-mail-folder="sent" title="Sent emails">&#128228; Sent (<span id="caveSentCountBadge">%d</span>)</button>'
         '<button type="button" class="tw-btn cave-btab cave-btab-sr" id="btnCaveOpenSpeedRacer" data-cave-open-speed-racer="1" title="Toggle Speed Racer Scribe Draft Queue">&#127950;&#65039; Speed Racer (<span id="caveSrBtnCount">%d</span>)</button>'
+        + scribe_queue_pill_html +
         '</div>'
         '<div style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap">'
         '<button type="button" class="tw-btn" id="btnCaveCommsDraftNew" data-comms-draft-reply="1" data-comms-draft-subject="Update on next steps" data-comms-draft-to="" data-comms-draft-project="" data-comms-draft-step="" title="Compose a new email">&#9998; Compose</button>'
@@ -1877,6 +1900,7 @@ def _comms_pulse_html(ctx):
         '        <textarea id="caveDlgStewardDirectionsInput" rows="1" class="cave-autogrow-ta" placeholder="Give Scribe instructions for Speed Racer, or tell Cave Steward what to add/update on The List..."></textarea>'
         '      </div>'
         '      <div class="cave-scribe-bar-btns">'
+        '        <button type="button" class="tw-btn cave-clear-draft-btn" id="btnCaveDlgClearDirectionsDraft" data-clear-draft title="Clear unsent instruction draft">Clear</button>'
         '        <button type="button" class="tw-btn cave-btn-sr" id="btnCaveDlgSendDirectionsToSr" title="Have Scribe synthesize a reply in Speed Racer">&#127950;&#65039; Scribe &rarr; Speed Racer</button>'
         '        <button type="button" class="tw-btn cave-btn-steward" id="btnCaveDlgSendStewardAction" title="Send full email + your instruction directly to Cave Steward">&#128203; Send to Steward</button>'
         '      </div>'
@@ -2193,14 +2217,38 @@ def _candidates_tile(ctx):
         href = "/steward/v1?pid=%s&amp;dir=%s" % (esc(pid), esc(_quote(str(rel or ""))))
         return '<a class="t-go cand-go" href="%s" target="_blank" rel="noopener" data-tip="Open cockpit &#8599;" title="Open the AI cockpit"><span class="t-btn-txt">cockpit </span><span class="t-go-arr">&#8599;</span></a>' % href
 
-    def acts_step(sid, pid="", rel=""):
+    camp_pid = str((ctx.get("campaign") or {}).get("pid") or "")
+
+    def lc_btns(sid="", ref="", pid="", rel=""):
+        if not sid and not ref and not pid:
+            return ""
+        if pid and pid == camp_pid and (not rel or str(rel).strip().lower() == "cave of wonders"):
+            return ""
+        attrs = []
+        if sid:
+            attrs.append('data-step="%s"' % esc(sid))
+        if ref:
+            attrs.append('data-ref="%s"' % esc(ref))
+        if pid:
+            attrs.append('data-pid="%s"' % esc(pid))
+        if rel:
+            attrs.append('data-dir="%s"' % esc(rel))
+        a_str = " ".join(attrs)
+        return (
+            '<button type="button" class="mini cave-lc-btn" data-cockpit-lifecycle="archive" %s title="Archive this AI Cockpit (reversible)">Archive</button>'
+            '<button type="button" class="mini cave-lc-btn danger" data-cockpit-lifecycle="retire" %s title="Retire this AI Cockpit (reversible)">Retire</button>'
+        ) % (a_str, a_str)
+
+    def acts_step(sid, pid="", rel="", ckind="cockpit"):
+        extra = lc_btns(sid=sid, pid=pid, rel=rel) if ckind == "cockpit" else ""
         return ('<span class="acts">%s<button class="mini" data-seat="deck" data-step="%s">&rarr; on deck</button>'
-                '<button class="mini" data-seat="active" data-step="%s">&rarr; active</button></span>') % (cockpit_link(pid, rel), esc(sid), esc(sid))
+                '<button class="mini" data-seat="active" data-step="%s">&rarr; active</button>%s</span>') % (cockpit_link(pid, rel), esc(sid), esc(sid), extra)
 
     def acts_new(c):
+        extra = lc_btns(ref=c.get("ref") or "", pid=c.get("pid") or "", rel=c.get("dir") or "")
         return ('<span class="acts">%s<button class="mini" data-cand-seat="deck" data-ref="%s" data-name="%s">&rarr; on deck</button>'
-                '<button class="mini" data-cand-seat="active" data-ref="%s" data-name="%s">&rarr; active</button></span>') % (
-            cockpit_link(c.get("pid") or "", c.get("dir") or ""), esc(c["ref"]), esc(c["name"]), esc(c["ref"]), esc(c["name"]))
+                '<button class="mini" data-cand-seat="active" data-ref="%s" data-name="%s">&rarr; active</button>%s</span>') % (
+            cockpit_link(c.get("pid") or "", c.get("dir") or ""), esc(c["ref"]), esc(c["name"]), esc(c["ref"]), esc(c["name"]), extra)
 
     def meta(score, why, created, worked, ckind="cockpit"):
         return ('data-score="%d" data-created="%s" data-worked="%s" data-cand-kind="%s"' % (score, esc(created or ""), esc(worked or ""), esc(ckind)),
@@ -2233,7 +2281,7 @@ def _candidates_tile(ctx):
             meta(p.get("c_score", 0), p.get("c_why", ""), p.get("c_created"), p.get("c_worked"), "task")[2],
             ('<span class="wm">&#9873;</span> ' if p.get("needs_you") else "") + esc(part_name(p)),
             "%s &middot; in %s" % (esc(KIND_LABEL.get(p.get("kind"), "")), esc(i.get("name") or "")),
-            acts_step(p.get("id") or ""))
+            acts_step(p.get("id") or "", ckind="task"))
         for i, p in sorted(in_goal_tasks, key=lambda t: -t[1].get("c_score", 0))
     )
     return (
@@ -2411,7 +2459,7 @@ def _panel(ctx):
         '<button id="cave-provider-capacity" class="provider-capacity" type="button" aria-label="Provider capacity and details"><strong>Provider capacity</strong><span>Unknown · reading host settings</span></button>'
         '<section class="composer"><label class="sr" for="say">Tell the steward what to do</label>'
         '<textarea id="say" rows="2" placeholder="Ask %s, discuss, or tell it what to do &mdash; it answers above as it writes; a %s verb applies on the record"></textarea>'
-        '<div class="comp-row"><span class="hint">Enter sends &middot; Shift+Enter new line &middot; the Cave&rsquo;s steward answers above &middot; start a new project called &lt;name&gt; at &lt;folder&gt;</span><button class="send" id="sendBtn">Send</button></div>'
+        '<div class="comp-row"><span class="hint">Enter sends &middot; Shift+Enter new line &middot; the Cave&rsquo;s steward answers above &middot; start a new project called &lt;name&gt; at &lt;folder&gt;</span><button type="button" class="mini clear-draft-btn" id="clearSayDraftBtn" data-clear-draft title="Clear unsent instruction draft">Clear</button><button class="send" id="sendBtn">Send</button></div>'
         '<div class="receipt" id="receipt" hidden><span class="r-mark">&#10003;</span><span id="receiptText"></span> <button class="mini" id="undoBtn" hidden>undo</button></div></section></aside>'
     ) % (seeds, "ideas that could start a project" if seeds else "no seeds yet", _seed_panel(ctx),
          resume_html(ctx.get("resume")), nudge_html(ctx.get("nudge"), "brief"), _dialogue(ctx), esc(st["label"]), esc(mode_name(st)))

@@ -9,7 +9,7 @@ extraction. The archived commit sha below is the honest provenance.
 | researchPrime | <path> | `bcf6f4a5540b6fefa02e47416968b8752ccba807` |
 | crucible | <path> | `bcf6f4a5540b6fefa02e47416968b8752ccba807` |
 | foreman | <path> | `bcf6f4a5540b6fefa02e47416968b8752ccba807` |
-| gandalf | <path> Foundry | `61a3ec9b72bb7f61f2cb58d4b657646e978b214b` |
+| gandalf | <path> Foundry\skills\gandalf | `61a3ec9b72bb7f61f2cb58d4b657646e978b214b` |
 | jumper | <path> Foundry | `61a3ec9b72bb7f61f2cb58d4b657646e978b214b` |
 | ramanujan | <path> Foundry | `61a3ec9b72bb7f61f2cb58d4b657646e978b214b` |
 | legal-beagle | <path> Foundry | `61a3ec9b72bb7f61f2cb58d4b657646e978b214b` |

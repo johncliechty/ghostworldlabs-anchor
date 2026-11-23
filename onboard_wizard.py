@@ -4015,6 +4015,7 @@ def dispatch_wizard_action(
         hb_target = str(
             body.get("homebase_url")
             or body.get("remote_address")
+            or os.environ.get("ANCHOR_HOMEBASE_URL")
             or topo_cur.get("coordination_hub")
             or "https://gwl-server.tailb49f65.ts.net"
         ).strip()
@@ -4043,7 +4044,10 @@ def dispatch_wizard_action(
             return {"ok": False, "status_code": 401, "error": "unauthorized"}
         import mothership_updater as _mu
         eff_root = _resolve_base_dir(base_dir) if base_dir is not None else None
-        return _mu.sync_telemetry_to_homebase(anchor_root=eff_root)
+        return _mu.sync_telemetry_to_homebase(
+            anchor_root=eff_root,
+            heartbeat_even_if_empty=bool(body.get("heartbeat_even_if_empty", True)),
+        )
     if act == "list_homebase_telemetry":
         if not bool(body.get("_req_auth_ok")):
             return {"ok": False, "status_code": 401, "error": "unauthorized"}

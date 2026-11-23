@@ -25,11 +25,15 @@ import contextlib
 import json
 import math
 import os
+import socketserver
 import time
 import threading
 import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath, PureWindowsPath
+
+if getattr(socketserver.TCPServer, "request_queue_size", 5) < 64:
+    socketserver.TCPServer.request_queue_size = 64
 
 if os.name == "nt":
     import msvcrt

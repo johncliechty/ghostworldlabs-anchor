@@ -6,7 +6,7 @@
 
 const Proto = (() => {
   const PARAMS = new URLSearchParams(location.search);
-  const DIR = PARAMS.get("dir") || "";
+  const DIR = PARAMS.get("dir") || PARAMS.get("effort") || "";
   window.STEWARD_DIR = DIR;
   const _dismissedSessionKeys = new Set();
   const _openedReviewKeys = new Set();
@@ -157,7 +157,7 @@ const Proto = (() => {
   // reports-links W3: authed JSON POST to an ANCHOR route (not a steward verb —
   // the page shim passes /api/rnd/ through unrewritten). Same token path the
   // tidy-idy caller uses: Bearer + X-Anchor-Token from the page token.
-  function _postJson(url, payload) {
+  function _authHeadersObj() {
     const headers = { "Content-Type": "application/json" };
     let tok = window.STEWARD_TOKEN || "";
     try { tok = tok || localStorage.getItem("anchor_token") || ""; } catch (e) {}
@@ -165,7 +165,18 @@ const Proto = (() => {
       headers["X-Anchor-Token"] = tok;
       headers["Authorization"] = "Bearer " + tok;
     }
-    return fetch(url, { method: "POST", headers: headers,
+    return headers;
+  }
+  let _clientMsgSeq = 0;
+  function _mintClientMsgId(prefix = "cmsg") {
+    _clientMsgSeq += 1;
+    const rand = (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function")
+      ? crypto.randomUUID()
+      : (Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10) + "-" + _clientMsgSeq);
+    return prefix + "-" + rand;
+  }
+  function _postJson(url, payload) {
+    return fetch(url, { method: "POST", headers: _authHeadersObj(),
                         body: JSON.stringify(payload) });
   }
   function oneLine(value, limit=110) {
@@ -1578,7 +1589,7 @@ const Proto = (() => {
         try { await post("/api/clear-wait", { question_id: q ? q.id : null }); } catch (e) {}
         if (q && q.id) {
           if (lastState) lastState.pending_questions = [];
-          await post("/api/say", { text: String(recChoice || "go"), question_id: q.id });
+          await post("/api/say", { text: String(recChoice || "go"), question_id: q.id, clear_draft: false });
         } else {
           await sendSay("go");
         }
@@ -2029,6 +2040,32 @@ const Proto = (() => {
     // status event replayed from the engine buffer.
     if (statusId && latestStatusId && compareStatusId(statusId, latestStatusId) <= 0) return;
     if (statusId && !statusId.startsWith("chat-routed-")) latestStatusId = statusId;
+    let statFp = "";
+    try {
+      statFp = JSON.stringify([
+        statusId,
+        stat.at || "",
+        !!stat.stale,
+        stat.lead_line || "",
+        stat.eta || "",
+        stat.now || [],
+        stat.tests || "",
+        stat.journal || "",
+        stat.plan || {},
+        stat.running || null,
+        stat.slice || null,
+        stat.compact || null,
+        stat.status_card || null,
+        (stat.history_updates || []).length,
+        stat.failure_state || "",
+        stat.message || "",
+      ]);
+      if (statFp && renderStatus._lastFp === statFp && s.querySelector(".blk.status.latest")) {
+        syncCompactActivity(lastState);
+        return;
+      }
+      renderStatus._lastFp = statFp;
+    } catch (e) { /* render normally if non-serializable */ }
     const renderedAtMs = Date.now();
     latestStatusRun = stat.running || null;
     const nextBody = $("[data-delivmount] .blk.next .body");
@@ -2563,12 +2600,19 @@ const Proto = (() => {
     // acks coalesce to ONE for the NEWEST rendered status (800ms debounce) — never
     // a burst per historical event. Fire-and-forget; failures never touch the pane.
     try {
-      renderStatus._ackAt = stat.at || "";
-      clearTimeout(renderStatus._ackTimer);
-      renderStatus._ackTimer = setTimeout(() => {
-        try { post(api("/api/status-ack"), { at: renderStatus._ackAt }).catch(() => {}); }
-        catch (e) { /* no-op */ }
-      }, 800);
+      const ackAt = stat.at || "";
+      const ackKey = (statusId || "") + "|" + ackAt;
+      if (ackAt && renderStatus._lastSentAckKey !== ackKey) {
+        renderStatus._ackAt = ackAt;
+        renderStatus._ackKey = ackKey;
+        clearTimeout(renderStatus._ackTimer);
+        renderStatus._ackTimer = setTimeout(() => {
+          if (renderStatus._lastSentAckKey === renderStatus._ackKey) return;
+          renderStatus._lastSentAckKey = renderStatus._ackKey;
+          try { post(api("/api/status-ack"), { at: renderStatus._ackAt }).catch(() => {}); }
+          catch (e) { /* no-op */ }
+        }, 800);
+      }
     } catch (e) { /* no-op */ }
   }
 
@@ -8393,15 +8437,35 @@ const Proto = (() => {
     return s;
   }
 
-  async function sendSay(text, questionId) {
+  let _pageUnloading = false;
+  window.addEventListener("beforeunload", () => { _pageUnloading = true; });
+  window.addEventListener("pagehide", () => { _pageUnloading = true; });
+  async function sendSay(text, questionId, clientMsgId) {
+    const msgId = clientMsgId || _mintClientMsgId("say");
+    const bodyPayload = {
+      text,
+      refinement_context: _refinementContext,
+      question_id: questionId || null,
+      talk_mode: isTalkModeOn(),
+      client_msg_id: msgId,
+    };
+    const attemptPost = async () => {
+      const r = await post("/api/say", bodyPayload);
+      return await r.json();
+    };
     try {
-      const r = await post("/api/say", { text, refinement_context: _refinementContext, question_id: questionId || null, talk_mode: isTalkModeOn() });
-      const j = await r.json();
+      let j;
+      try {
+        j = await attemptPost();
+      } catch (firstNetErr) {
+        if (_pageUnloading) throw firstNetErr;
+        j = await attemptPost();
+      }
       if (j.ok) {
         _refinementContext = null; _answerQuestionId = null;
         const ta = $("[data-say]");
         if (ta) ta.placeholder = "";
-        if (j.spoken_summary || j.reply) {
+        if (!j.deduplicated && (j.spoken_summary || j.reply)) {
           speakConciseSummary(j.spoken_summary || j.reply);
         }
       } else {
@@ -8438,28 +8502,201 @@ const Proto = (() => {
       ta.style.overflowY = ta.scrollHeight > ta.clientHeight ? "auto" : "hidden";
     };
     ta.addEventListener("input", grow);
-    // R12 (2026-09-28, John: "conversations are saved as they are put in"): the unsent text is kept in this browser
-    // on every keystroke (localStorage, keyed to this record) and put back after a crash, a restart or a reload of
-    // the page; a delivered turn clears it, an undelivered one keeps it
-    const DRAFT_KEY = "anchor:draft:say:" + (PARAMS.get("pid") || "") + ":" + DIR + (TILE ? ":tile" : "");   // the tile's own words, never the cockpit tab's (ChatGPT 2026-10-02)
+    // Wave 3 (2026-11-20): Crash-durable unified composer drafts across full AI cockpit (/steward/v1)
+    // and Cave expanded initiative tile (/steward/v1?view=tile), plus monotonic dictation_epoch fencing.
+    const _pidForDraft = () => PARAMS.get("pid") || PARAMS.get("project") || window.STEWARD_PID || "";
+    const DRAFT_KEY = "anchor:draft:say:" + _pidForDraft() + ":" + DIR;
+    const composerState = { dictation_epoch: 0 };
+    ta._composerState = composerState;
+    ta.dataset.dictationEpoch = "0";
+    ta.dataset.draftBadge = "EMPTY";
+    const bumpDictationEpoch = () => {
+      composerState.dictation_epoch += 1;
+      ta.dataset.dictationEpoch = String(composerState.dictation_epoch);
+      return composerState.dictation_epoch;
+    };
     let _draftT = null;
-    const saveDraft = () => { try { if (ta.value.trim()) localStorage.setItem(DRAFT_KEY, ta.value); else localStorage.removeItem(DRAFT_KEY); } catch (e) {} };
-    const clearDraft = () => { try { localStorage.removeItem(DRAFT_KEY); } catch (e) {} };
-    ta.addEventListener("input", () => { clearTimeout(_draftT); _draftT = setTimeout(saveDraft, 250); });
-    ta.addEventListener("blur", saveDraft);  // the app blurs a composer before dropping its inactive frame
-    window.addEventListener("beforeunload", saveDraft);
+    let _userEditedSinceBoot = false;
+    let _draftDirty = false;
+    let _lastPersistedDraft = null;
+    let _clearingNow = false;
+    const _draftUrl = (extraQuery = "") => {
+      const qPid = _pidForDraft();
+      const parts = [];
+      if (qPid) parts.push("pid=" + encodeURIComponent(qPid));
+      parts.push("dir=" + encodeURIComponent(DIR));
+      parts.push("surface=cockpit");
+      if (extraQuery) parts.push(extraQuery);
+      return "/api/steward/drafts?" + parts.join("&");
+    };
+    const flushDraftToDisk = (optsFlush = {}) => {
+      if (_clearingNow) return Promise.resolve();
+      const val = String(ta.value || "");
+      try {
+        if (val.trim()) localStorage.setItem(DRAFT_KEY, val);
+        else localStorage.removeItem(DRAFT_KEY);
+      } catch (e) {}
+      if (!optsFlush.force && !_draftDirty && val === _lastPersistedDraft) return Promise.resolve();
+      if (optsFlush.unload && !_draftDirty) return Promise.resolve();
+      _draftDirty = false;
+      _lastPersistedDraft = val;
+      const qPid = _pidForDraft();
+      const bodyStr = JSON.stringify({
+        pid: qPid,
+        project: qPid,
+        dir: DIR,
+        effort: DIR,
+        surface: "cockpit",
+        draft: val,
+      });
+      const url = _draftUrl();
+      return fetch(url, {
+        method: "POST",
+        headers: _authHeadersObj(),
+        credentials: "same-origin",
+        keepalive: !!optsFlush.keepalive,
+        body: bodyStr,
+      }).then(async (r) => {
+        const j = await r.json().catch(() => ({}));
+        if (j && j.unknown_state) {
+          ta.dataset.draftBadge = "UNKNOWN";
+          ta.dataset.draftStatusKind = j.status_kind || "backing-store-unreadable";
+        } else if (r.ok) {
+          ta.dataset.draftBadge = val ? "SAVED" : "EMPTY";
+          ta.dataset.draftStatusKind = j.status_kind || (val ? "saved" : "empty-but-valid");
+        }
+        return j;
+      }).catch(() => {
+        if (optsFlush.keepalive && typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+          try {
+            navigator.sendBeacon(url, new Blob([bodyStr], { type: "application/json" }));
+          } catch (e) {}
+        }
+      });
+    };
+    const saveDraft = () => {
+      if (_clearingNow) return;
+      flushDraftToDisk({ keepalive: false });
+    };
+    const clearDraft = () => {
+      clearTimeout(_draftT);
+      _draftDirty = false;
+      _lastPersistedDraft = "";
+      try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
+      return fetch(_draftUrl(), {
+        method: "DELETE",
+        headers: _authHeadersObj(),
+        credentials: "same-origin",
+        keepalive: true,
+      }).then(async (r) => {
+        const j = await r.json().catch(() => ({}));
+        if ((j && j.unknown_state) || r.status >= 500 || !r.ok) {
+          ta.dataset.draftBadge = (j && j.unknown_state) || r.status >= 500 ? "UNKNOWN" : ((j && j.badge) || "UNKNOWN");
+          ta.dataset.draftStatusKind = (j && j.status_kind) || "backing-store-unreadable";
+          return j;
+        }
+        ta.dataset.draftBadge = "EMPTY";
+        ta.dataset.draftStatusKind = (j && j.status_kind) || "empty-but-valid";
+        return j;
+      }).catch(() => {});
+    };
+    ta.addEventListener("input", () => {
+      if (_clearingNow) return;
+      _userEditedSinceBoot = true;
+      _draftDirty = true;
+      try {
+        if (ta.value.trim()) localStorage.setItem(DRAFT_KEY, ta.value);
+        else localStorage.removeItem(DRAFT_KEY);
+      } catch (e) {}
+      clearTimeout(_draftT);
+      _draftT = setTimeout(() => flushDraftToDisk({ keepalive: false }), 220);
+    });
+    ta.addEventListener("blur", () => { if (_draftDirty) flushDraftToDisk({ keepalive: true }); });
+    const _unloadDraftFlush = () => {
+      clearTimeout(_draftT);
+      if (_draftDirty) flushDraftToDisk({ keepalive: true, unload: true });
+    };
+    window.addEventListener("beforeunload", _unloadDraftFlush);
+    window.addEventListener("pagehide", _unloadDraftFlush);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") _unloadDraftFlush();
+    });
     try {
       const kept = localStorage.getItem(DRAFT_KEY);
-      if (kept && kept.trim() && !ta.value.trim()) { ta.value = kept; grow(); addLine("sys", "your unsent text is back in the box"); }
+      if (kept && kept.trim() && !ta.value.trim()) {
+        ta.value = kept;
+        _lastPersistedDraft = kept;
+        ta.dataset.draftBadge = "SAVED";
+        grow();
+        addLine("sys", "your unsent text is back in the box");
+      }
     } catch (e) {}
+    fetch(_draftUrl(), { headers: _authHeadersObj(), credentials: "same-origin", cache: "no-store" })
+      .then(async (r) => {
+        const j = await r.json().catch(() => ({}));
+        if (j && j.unknown_state) {
+          ta.dataset.draftBadge = "UNKNOWN";
+          ta.dataset.draftStatusKind = j.status_kind || "backing-store-unreadable";
+          return;
+        }
+        if (!r.ok) {
+          if (j && j.status_kind) ta.dataset.draftStatusKind = j.status_kind;
+          return;
+        }
+        const diskDraft = (j && typeof j.draft === "string") ? j.draft : "";
+        ta.dataset.draftStatusKind = (j && j.status_kind) || (diskDraft ? "saved" : "empty-but-valid");
+        if (!_userEditedSinceBoot) {
+          if (diskDraft && !ta.value.trim()) {
+            ta.value = diskDraft;
+            _lastPersistedDraft = diskDraft;
+            ta.dataset.draftBadge = "SAVED";
+            try { localStorage.setItem(DRAFT_KEY, diskDraft); } catch (e) {}
+            grow();
+            addLine("sys", "your unsent text is back in the box");
+          } else if (!diskDraft && !ta.value.trim()) {
+            ta.dataset.draftBadge = "EMPTY";
+          } else if (ta.value.trim()) {
+            ta.dataset.draftBadge = "SAVED";
+          }
+        }
+      })
+      .catch(() => {});
 
     // Wire native Windows 11 left-click & right-click spellcheck suggestion popup on the composer textarea
     let _stopDictationFn = null;
     let _isDictatingFn = () => false;
-    try { wireSpellcheckOnTextarea(ta, () => { grow(); saveDraft(); }); } catch (e) {}
+    try { wireSpellcheckOnTextarea(ta, () => { _userEditedSinceBoot = true; _draftDirty = true; grow(); saveDraft(); }); } catch (e) {}
 
-    // Inject best-in-class 🎤 Dictate button + 🔊 Talk Mode button next to Send
+    // Inject best-in-class 🎤 Dictate button + 🔊 Talk Mode button + [data-clear-draft] Clear button next to Send
     const composerHost = (send && send.parentElement) || ta.parentElement;
+    if (composerHost && send) {
+      let clearBtn = composerHost.querySelector("[data-clear-draft]");
+      if (!clearBtn) {
+        clearBtn = el("button", "clear-draft-btn", "Clear");
+        clearBtn.type = "button";
+        clearBtn.dataset.clearDraft = "1";
+        clearBtn.title = "Clear unsent instruction draft";
+        composerHost.insertBefore(clearBtn, send);
+      }
+      if (!clearBtn._w3ClearWired) {
+        clearBtn._w3ClearWired = true;
+        clearBtn.onclick = (ev) => {
+          if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+          _userEditedSinceBoot = true;
+          bumpDictationEpoch();
+          if (_isDictatingFn() && _stopDictationFn) {
+            try { _stopDictationFn({ discardPending: true }); } catch (e) {}
+          }
+          _composing = false;
+          _clearingNow = true;
+          ta.value = "";
+          grow();
+          _clearingNow = false;
+          clearDraft();
+          ta.focus();
+        };
+      }
+    }
     if (composerHost && send && !composerHost.querySelector("[data-dictate-btn]")) {
       try { const dictBtn = el("button", "composer-voice-btn", "🎤 Dictate");
       dictBtn.type = "button";
@@ -8484,7 +8721,8 @@ const Proto = (() => {
       let transcribeInFlight = Promise.resolve();
       const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-      const appendRecognizedText = (rawText) => {
+      const appendRecognizedText = (rawText, reqEpoch) => {
+        if (reqEpoch !== undefined && reqEpoch !== composerState.dictation_epoch) return;
         const cleanNorm = String(rawText || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ");
         if (!cleanNorm) return;
         const now = Date.now();
@@ -8493,6 +8731,8 @@ const Proto = (() => {
         recentChunks.push({ norm: cleanNorm, ts: now });
         const formatted = formatDictatedChunk(rawText, ta.value);
         if (formatted) {
+          _userEditedSinceBoot = true;
+          _draftDirty = true;
           ta.value = (ta.value || "") + formatted;
           grow();
           saveDraft();
@@ -8514,18 +8754,42 @@ const Proto = (() => {
         speechStartTs = 0;
         const b64 = encodeWav16kBase64(framesToSend, sampleRate);
         if (!b64) return Promise.resolve();
+        const reqEpoch = composerState.dictation_epoch;
+        const reqMsgId = _mintClientMsgId("dict");
         if (dictActive) dictBtn.textContent = "⏳ Transcribing…";
-        const p = _postJson("/api/steward/dictate", { action: "transcribe", audio_b64: b64 })
+        const p = _postJson("/api/steward/dictate", {
+          action: "transcribe",
+          audio_b64: b64,
+          dictation_epoch: reqEpoch,
+          client_msg_id: reqMsgId,
+        })
           .then(r => r.json())
           .then(j => {
-            if (j && j.text) appendRecognizedText(j.text);
+            if (reqEpoch !== composerState.dictation_epoch) return;
+            if (j && j.text) appendRecognizedText(j.text, reqEpoch);
           })
           .catch(() => {})
           .finally(() => {
-            if (dictActive) dictBtn.textContent = "⏹ Listening…";
+            if (dictActive && reqEpoch === composerState.dictation_epoch) dictBtn.textContent = "⏹ Listening…";
           });
         transcribeInFlight = transcribeInFlight.then(() => p, () => p);
         return transcribeInFlight;
+      };
+      ta._dispatchFencedTranscribe = (audioB64) => {
+        const reqEpoch = composerState.dictation_epoch;
+        const reqMsgId = _mintClientMsgId("dict");
+        return _postJson("/api/steward/dictate", {
+          action: "transcribe",
+          audio_b64: audioB64,
+          dictation_epoch: reqEpoch,
+          client_msg_id: reqMsgId,
+        })
+          .then(r => r.json())
+          .then(j => {
+            if (reqEpoch !== composerState.dictation_epoch) return { fenced: true, reqEpoch, currentEpoch: composerState.dictation_epoch };
+            if (j && j.text) appendRecognizedText(j.text, reqEpoch);
+            return { fenced: false, text: (j && j.text) || "" };
+          });
       };
 
       const teardownAudioCapture = () => {
@@ -8547,7 +8811,8 @@ const Proto = (() => {
         }
       };
 
-      const stopDictation = async () => {
+      const stopDictation = async (stopOpts = {}) => {
+        const wasActive = !!(dictActive || window.__dictationActive || recog || dictPollTimer || audioCtx);
         dictActive = false;
         window.__dictationActive = false;
         if (dictRestarter) { clearTimeout(dictRestarter); dictRestarter = null; }
@@ -8556,23 +8821,36 @@ const Proto = (() => {
           try { recog.onend = null; recog.onerror = null; recog.onresult = null; recog.stop(); } catch (e) {}
           recog = null;
         }
-        const flushProm = flushAudioBuffer();
+        let flushProm = Promise.resolve();
+        if (stopOpts && stopOpts.discardPending) {
+          pcmFrames = [];
+          preRollFrames = [];
+          speechDetectedInChunk = false;
+          speechStartTs = 0;
+        } else if (wasActive) {
+          flushProm = flushAudioBuffer();
+        }
         teardownAudioCapture();
         dictBtn.classList.remove("recording", "active");
         dictBtn.textContent = "🎤 Dictate";
-        _postJson("/api/steward/dictate", { action: "stop" }).catch(() => {});
-        try { await flushProm; } catch (e) {}
+        if (wasActive) {
+          _postJson("/api/steward/dictate", { action: "stop", dictation_epoch: composerState.dictation_epoch }).catch(() => {});
+          if (!(stopOpts && stopOpts.discardPending)) {
+            try { await flushProm; } catch (e) {}
+          }
+        }
       };
       _stopDictationFn = stopDictation;
       _isDictatingFn = () => dictActive;
 
       const startBrowserMicCapture = async () => {
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return false;
+        const captureEpoch = composerState.dictation_epoch;
         try {
           const stream = await navigator.mediaDevices.getUserMedia({
             audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
           });
-          if (!dictActive) {
+          if (!dictActive || captureEpoch !== composerState.dictation_epoch) {
             stream.getTracks().forEach(t => t.stop());
             return false;
           }
@@ -8592,7 +8870,7 @@ const Proto = (() => {
           speechStartTs = 0;
           lastVoiceTs = 0;
           audioProcessor.onaudioprocess = (ev) => {
-            if (!dictActive) return;
+            if (!dictActive || captureEpoch !== composerState.dictation_epoch) return;
             const input = ev.inputBuffer.getChannelData(0);
             const copy = new Float32Array(input.length);
             copy.set(input);
@@ -8633,6 +8911,7 @@ const Proto = (() => {
 
       const spawnBrowserRecog = () => {
         if (!SpeechRec || !dictActive) return false;
+        const recogEpoch = composerState.dictation_epoch;
         try {
           if (recog) { try { recog.onend = null; recog.onerror = null; recog.onresult = null; recog.stop(); } catch (e) {} }
           recog = new SpeechRec();
@@ -8640,15 +8919,16 @@ const Proto = (() => {
           recog.interimResults = false;
           recog.lang = "en-US";
           recog.onresult = (ev) => {
+            if (recogEpoch !== composerState.dictation_epoch) return;
             for (let i = ev.resultIndex; i < ev.results.length; i++) {
               if (ev.results[i].isFinal && ev.results[i][0] && ev.results[i][0].transcript) {
-                appendRecognizedText(ev.results[i][0].transcript);
+                appendRecognizedText(ev.results[i][0].transcript, recogEpoch);
               }
             }
           };
           recog.onend = () => {
-            if (dictActive) {
-              dictRestarter = setTimeout(() => { if (dictActive) spawnBrowserRecog(); }, 250);
+            if (dictActive && recogEpoch === composerState.dictation_epoch) {
+              dictRestarter = setTimeout(() => { if (dictActive && recogEpoch === composerState.dictation_epoch) spawnBrowserRecog(); }, 250);
             }
           };
           recog.start();
@@ -8658,6 +8938,7 @@ const Proto = (() => {
         }
       };
       const startDictation = async () => {
+        const startEpoch = composerState.dictation_epoch;
         dictActive = true;
         window.__dictationActive = true;
         window.__lastSayFocusTs = Date.now();
@@ -8665,42 +8946,46 @@ const Proto = (() => {
         dictBtn.textContent = "⏹ Listening…";
         ta.focus();
         const micOk = await startBrowserMicCapture();
+        if (!dictActive || startEpoch !== composerState.dictation_epoch) return;
         if (micOk) {
           // Primary path: 16kHz PCM -> local faster-whisper-base.en (do not run System.Speech DictationGrammar in parallel!)
           return;
         }
         // Fallback only when browser getUserMedia is unavailable
         spawnBrowserRecog();
-        _postJson("/api/steward/dictate", { action: "start" })
+        _postJson("/api/steward/dictate", { action: "start", dictation_epoch: startEpoch })
           .then(r => r.json())
           .then(j => {
+            if (startEpoch !== composerState.dictation_epoch) return;
             if (j && typeof j.last_seq === "number") dictSeq = j.last_seq;
           })
           .catch(() => {});
         if (dictPollTimer) clearInterval(dictPollTimer);
         dictPollTimer = setInterval(() => {
           if (!dictActive) return;
-          _postJson("/api/steward/dictate", { action: "poll", since: dictSeq })
+          const reqEpoch = composerState.dictation_epoch;
+          _postJson("/api/steward/dictate", { action: "poll", since: dictSeq, dictation_epoch: reqEpoch })
             .then(r => r.json())
             .then(j => {
-              if (!dictActive || !j) return;
+              if (!dictActive || reqEpoch !== composerState.dictation_epoch || !j) return;
               if (Array.isArray(j.chunks)) {
                 j.chunks.forEach(c => {
                   if (c && typeof c.seq === "number" && c.seq > dictSeq) dictSeq = c.seq;
-                  if (c && c.text) appendRecognizedText(c.text);
+                  if (c && c.text) appendRecognizedText(c.text, reqEpoch);
                 });
               }
             })
             .catch(() => {});
         }, 500);
       };
+      const clearBtnRef = composerHost.querySelector("[data-clear-draft]") || send;
       dictBtn.onclick = (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
         if (dictActive) stopDictation();
         else startDictation();
       };
-      composerHost.insertBefore(dictBtn, send);
+      composerHost.insertBefore(dictBtn, clearBtnRef);
 
       const talkBtn = el("button", "composer-voice-btn" + (isTalkModeOn() ? " talk-active" : ""), isTalkModeOn() ? "🔊 Talk: ON" : "🔈 Talk Mode");
       talkBtn.type = "button";
@@ -8716,20 +9001,36 @@ const Proto = (() => {
           speakConciseSummary(intro, true);
         }
       };
-      composerHost.insertBefore(talkBtn, send);
+      composerHost.insertBefore(talkBtn, clearBtnRef);
       setTalkModeOn(isTalkModeOn()); } catch (e) {}
     }
 
+    let _submitInFlight = false;
     const submit = async () => {
-      if (_isDictatingFn()) { try { if (_stopDictationFn) await _stopDictationFn(); } catch (e) {} } _composing = false; let text = ta.value.trim();
+      if (_submitInFlight) return;
+      _composing = false;
+      let text = ta.value.trim();
       if (!text) return;
+      _userEditedSinceBoot = true;
+      bumpDictationEpoch();
+      if (_isDictatingFn() && _stopDictationFn) {
+        try { _stopDictationFn({ discardPending: true }); } catch (e) {}
+      }
+      _submitInFlight = true;
       closeSpellPopup();
+      clearTimeout(_draftT);
       // dictation-friendly grasscatch: "later: ..." parks it without ceremony
       const later = text.match(/^(later|grasscatcher?)[:,]\s*(.+)/is);
       if (later) text = "Grasscatch this (park it on the Strip with a reason, " +
                         "then carry on with the step in hand): " + later[2];
       const keep = ta.value;
-      ta.value = ""; grow(); _skipNextJohnEcho = text; const optimisticBlk = addBlock("john", opts.johnLabel || (window.USER_DISPLAY_NAME ? String(window.USER_DISPLAY_NAME).trim().toUpperCase() : "JOHN"), text); if (send) { send.disabled = true; send.textContent = "Sending…"; }
+      const clientMsgId = _mintClientMsgId("say");
+      _clearingNow = true;
+      ta.value = ""; grow();
+      _clearingNow = false;
+      _draftDirty = false;
+      try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
+      _skipNextJohnEcho = text; const optimisticBlk = addBlock("john", opts.johnLabel || (window.USER_DISPLAY_NAME ? String(window.USER_DISPLAY_NAME).trim().toUpperCase() : "JOHN"), text); if (send) { send.disabled = true; send.textContent = "Sending…"; }
       { const d = scrollEl(); if (d) { d._follow = true; pin(d, true); } }   // his own message brings him to the newest
       // Implicit Approval-on-Feedback (John, 2026-10-21): never pop up a nagging REVIEW CHECK card (steward-interject-card / Keep in For Review).
       // When John gives feedback in the dialogue, reconcile only the review items that match the topic/target he named
@@ -8790,8 +9091,8 @@ const Proto = (() => {
             .catch(() => {});
         }
       } catch (e) {}
-      let j = { ok: false }; try { j = await sendSay(text, _answerQuestionId); } finally { if (send) { send.disabled = false; send.textContent = "Send"; } }
-      if (!j.ok) { _skipNextJohnEcho = ""; if (optimisticBlk && optimisticBlk.isConnected) optimisticBlk.remove(); ta.value = keep; grow(); saveDraft(); } else { clearDraft(); }
+      let j = { ok: false }; try { j = await sendSay(text, _answerQuestionId, clientMsgId); } finally { _submitInFlight = false; if (send) { send.disabled = false; send.textContent = "Send"; } }
+      if (!j.ok) { _skipNextJohnEcho = ""; if (optimisticBlk && optimisticBlk.isConnected) optimisticBlk.remove(); if (!ta.value.trim()) { ta.value = keep; grow(); } try { if (keep && keep.trim()) localStorage.setItem(DRAFT_KEY, keep); } catch (e) {} _draftDirty = true; saveDraft(); } else { clearDraft(); }
     };
     if (send) { send.disabled = false; send.onclick = (ev) => { if (ev) { ev.preventDefault(); ev.stopPropagation(); } submit(); }; }
     if (TILE) {
@@ -8841,10 +9142,9 @@ const Proto = (() => {
           return;
         }
       }
-      // 2026-10-13 (John): CLI-style Enter sends immediately; Shift+Enter makes a new line.
-      // Never send from a key during an active composition.
-      if ((e.key !== "Enter" && e.keyCode !== 13) || e.isComposing || e.keyCode === 229) return;
-      if (e.shiftKey) return;
+      // Enter sends immediately to the Steward; Shift+Enter inserts a newline; never mid-composition.
+      if ((e.key !== "Enter" && e.keyCode !== 13) || e.isComposing || e.keyCode === 229 || _composing) return;
+      if (e.shiftKey && !e.ctrlKey && !e.metaKey) return;
       _composing = false; e.preventDefault(); e.stopPropagation(); submit();
     });
   }
@@ -8865,7 +9165,7 @@ const Proto = (() => {
     if (drive) drive.onclick = async () => {
       const on = lastState && lastState.drive;
       await post("/api/engine", { action: on ? "drive_off" : "drive_on" });
-      if (!on && !(lastState && lastState.alive)) await post("/api/say", { text: "go" });
+      if (!on && !(lastState && lastState.alive)) await post("/api/say", { text: "go", clear_draft: false });
     };
     const mini = $("[data-min]");
     const app = $(".app");
@@ -8896,7 +9196,7 @@ const Proto = (() => {
     const catchIn = $("[data-catch]");
     if (catchIn) catchIn.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && catchIn.value.trim()) {
-        post("/api/say", { text: "Grasscatch this (park it on the Strip, then carry on): " + catchIn.value.trim() });
+        post("/api/say", { text: "Grasscatch this (park it on the Strip, then carry on): " + catchIn.value.trim(), clear_draft: false });
         catchIn.value = "";
       }
     });

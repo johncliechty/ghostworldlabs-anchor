@@ -37,7 +37,7 @@ a { color: var(--steward); text-decoration: none; }
 
 /* ---------- app frame ---------- */
 .app { display: grid; grid-template-columns: 320px 1fr;
-       grid-template-rows: auto minmax(0, 1fr); height: 100vh; overflow: hidden; }
+       grid-template-rows: auto minmax(0, 1fr); height: 100vh; height: 100dvh; max-width: 100vw; overflow: hidden; }
 .rail, .main { min-height: 0; }
 .app.min .rail, .app.min .main { display: none; }
 
@@ -232,10 +232,16 @@ a { color: var(--steward); text-decoration: none; }
                      padding: 10px 12px; font: 15px var(--ui); resize: none;
                      min-height: 46px; max-height: 40vh; overflow-y: auto; }
 .composer textarea:focus { outline: none; border-color: var(--dim); }
-.composer .row { display: flex; align-items: center; gap: 10px;
-                 margin-top: 7px; }
-.composer .hint { color: var(--faint); font-size: 12px; flex: 1; }
-.composer .send { background: #24466e; border-color: #35577f; }
+.composer .row { display: flex; align-items: center; gap: 8px;
+                 margin-top: 7px; flex-wrap: wrap; }
+.composer .hint { color: var(--faint); font-size: 12px; flex: 1 1 200px; min-width: 0; }
+.composer .clear-draft-btn,
+[data-clear-draft] { background: #141c2c; border: 1px solid #2d3b55; color: #cbd5e1;
+                     font-size: 11.5px; font-weight: 600; padding: 4px 10px;
+                     border-radius: 6px; cursor: pointer; flex-shrink: 0; }
+.composer .clear-draft-btn:hover,
+[data-clear-draft]:hover { border-color: #f87171; color: #fecaca; background: rgba(239, 68, 68, 0.16); }
+.composer .send { background: #24466e; border-color: #35577f; flex-shrink: 0; }
 
 /* ---------- V1 iterations: goal bar · collapsible rail · status pane ---------- */
 .appx { grid-template-rows: auto auto minmax(0, 1fr); }
@@ -1409,17 +1415,30 @@ body[data-theme="command"] .composer textarea { border-color: #1e3357; }
 .app3 .bar {
   background: linear-gradient(180deg, #17202d 0%, #121822 100%);
   border-bottom: 1px solid var(--line);
-  padding: 7px 14px;
-  gap: 9px;
-  flex-wrap: nowrap;
+  padding: 7px 12px;
+  gap: 6px 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 .app3 .bar .title {
   font-size: 14px;
   font-weight: 700;
   color: var(--text);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(260px, 22vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app3 .bar > .top-spacer {
+  flex: 1 1 0px;
+  min-width: 0;
 }
 .app3 .bar [data-anvil-toggle] {
-  margin-left: auto;
+  margin-left: 0;
 }
 .app3 .bar > .top-deliv-strip {
   margin-left: auto;
@@ -1455,14 +1474,18 @@ body[data-theme="command"] .composer textarea { border-color: #1e3357; }
   text-decoration: underline;
 }
 .app3 .bar [data-spend] {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 11px;
+  display: inline-block;
+  padding: 4px 10px;
   border-radius: 999px;
   background: var(--panel2);
   border: 1px solid rgba(74, 222, 128, 0.42);
   color: var(--text);
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 84px;
+  max-width: min(350px, 24vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .app3 .bar [data-spend]:hover {
   background: #1f2b3d;
@@ -2924,8 +2947,8 @@ body[data-theme="command"] .composer textarea { border-color: #1e3357; }
 .app3 .leftcol {
   grid-column: 1;
   grid-row: 4;
-  width: var(--planw, 365px);
-  min-width: 340px;
+  width: var(--planw, clamp(255px, 23.5vw, 365px));
+  min-width: min(250px, 23.5vw);
   max-width: var(--planw, 365px);
   background: var(--panel);
   border-right: 1px solid var(--line);
@@ -2949,7 +2972,8 @@ body[data-theme="command"] .composer textarea { border-color: #1e3357; }
   grid-row: 4;
 }
 .app.statusopen.app3 .rightcol {
-  width: var(--statusw, 445px);
+  width: var(--statusw, clamp(280px, 28.5vw, 445px));
+  max-width: min(760px, 42vw);
   background: var(--panel);
   border-left: 1px solid var(--line);
 }
@@ -3996,11 +4020,20 @@ body[data-theme="command"] .composer textarea { border-color: #1e3357; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 7px 12px;
+  flex-wrap: wrap;
+  gap: 5px 8px;
+  padding: 7px 10px;
   border-bottom: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.015);
   flex: none;
+  min-width: 0;
+}
+.app3 .rightcol .phead2 > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
 }
 .app3 .rightcol .phead2 .status-state-pill {
   display: inline-flex;
@@ -4009,14 +4042,16 @@ body[data-theme="command"] .composer textarea { border-color: #1e3357; }
   background: transparent;
   border: none;
   padding: 0;
+  min-width: 0;
 }
 .app3 .rightcol .phead2 .rail-title-label {
   font-family: var(--mono);
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: 0.8px;
   color: var(--dim);
+  white-space: nowrap;
 }
 .app3 .rightcol .phead2 button {
   margin-left: 0;
@@ -4027,6 +4062,8 @@ body[data-theme="command"] .composer textarea { border-color: #1e3357; }
   background: var(--panel2);
   border: 1px solid var(--line);
   border-radius: 5px;
+  white-space: nowrap;
+  flex: none;
 }
 .app3 .rightcol .phead2 button:hover {
   color: var(--text);
@@ -4074,6 +4111,10 @@ body[data-theme="command"] .composer textarea { border-color: #1e3357; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  word-break: normal;
+  overflow-wrap: normal;
   font-family: var(--mono);
   font-size: 10.5px;
   font-weight: 700;

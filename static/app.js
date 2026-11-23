@@ -228,7 +228,26 @@
     return decodeURIComponent(r.path.split("/").filter(Boolean).pop() || "Page");
   }
 
+  function toScrollablePdf(r) {
+    if (!r || r.blank) return r;
+    if (r.path === "/api/steward/deliverable-file" &&
+        r.q.get("download") !== "1" &&
+        r.q.get("raw") !== "1" &&
+        r.q.get("scrollview") !== "0" &&
+        !r.q.has("scrollview") &&
+        !r.q.has("pdf_page")) {
+      var p = (r.q.get("path") || "").toLowerCase();
+      if (p.endsWith(".pdf") || p.endsWith(".html") || p.endsWith(".htm") || (p.endsWith(".pptx") && r.q.get("view") === "1")) {
+        var u = new URL(r.url, location.href);
+        u.searchParams.set("scrollview", "1");
+        return resolve(u.href);
+      }
+    }
+    return r;
+  }
+
   // ---------- the API the frames call (static/app-frame.js) ----------
+  var hoveredPane = -1;
   var api = {
     open: function (u, target, fromWin) {
       var r = resolve(u, fromWin);
@@ -240,7 +259,11 @@
         }
         return { closed: false, focus: function () {}, close: function () {} };
       }
-      if (!r.blank) r = conversationAlias(r);
+      if (!r.blank && r.q.get("raw") === "1" && r.path === "/api/steward/deliverable-file" && String(target || "").toLowerCase() === "_blank") {
+        // Explicit "Native PDF" request: open raw PDF in its own doc tile without rewriting to scrollview=1
+      } else if (!r.blank) {
+        r = toScrollablePdf(conversationAlias(r));
+      }
       var caller = tileOfWindow(fromWin);
       var from = caller ? shownIn(caller.id) : -1;
       if (from < 0) from = two ? active : 0;
@@ -287,6 +310,9 @@
       if (cockpitTarget(t)) refreshFeedback();
       return t.frame.contentWindow;
     },
+    openSecondWindow: function (u, _title, fromWin) {
+      return api.open(u, "_blank", fromWin);
+    },
     download: function (u, fromWin, suggestedAttr) {
       var r = resolve(u, fromWin);
       if (!r || r.blank || (!suggestedAttr && !isDownload(r))) return false;
@@ -316,7 +342,12 @@
     },
     touch: function (win) {                                    // a click inside a pane makes it the active pane
       var t = tileOfWindow(win), k = t ? shownIn(t.id) : -1;
+      if (k >= 0) hoveredPane = k;
       if (k >= 0 && k !== active) { active = k; layout(); render(); }
+    },
+    hover: function (win) {
+      var t = tileOfWindow(win), k = t ? shownIn(t.id) : -1;
+      if (k >= 0) hoveredPane = k;
     },
     openerOf: function (win) {
       var t = tileOfWindow(win);
@@ -746,6 +777,32 @@
 
   // ---------- zoom (Ctrl + / - / 0, Ctrl + wheel) and the window's own controls: the desktop program only ----------
   function host() { return window.pywebview && window.pywebview.api; }
+  function pdfZoomTargetFor(doc) {
+    try {
+      var w = doc && doc.defaultView;
+      if (w && typeof w.__anchorPdfZoom === "function") return w;
+    } catch (_e) {}
+    var candIdx = -1;
+    if (doc === document) {
+      candIdx = two ? active : 0;
+    } else if (hoveredPane >= 0 && (!two || hoveredPane === 0 || hoveredPane === 1)) {
+      var hTile = byId(panes[two ? hoveredPane : 0]);
+      try {
+        if (hTile && hTile.frame && hTile.frame.contentWindow && typeof hTile.frame.contentWindow.__anchorPdfZoom === "function") {
+          return hTile.frame.contentWindow;
+        }
+      } catch (_e2) {}
+    }
+    if (candIdx >= 0) {
+      var aTile = byId(panes[candIdx]);
+      try {
+        if (aTile && aTile.frame && aTile.frame.contentWindow && typeof aTile.frame.contentWindow.__anchorPdfZoom === "function") {
+          return aTile.frame.contentWindow;
+        }
+      } catch (_e3) {}
+    }
+    return null;
+  }
   api.zoom = function (step) {
     var h = host();
     if (!h || !h.zoom) return false;
@@ -772,11 +829,29 @@
           }
         }
       }
-      var step = (ev.key === "+" || ev.key === "=") ? 1 : (ev.key === "-" || ev.key === "_") ? -1 : ev.key === "0" ? 0 : null;
-      if (step !== null && api.zoom(step)) ev.preventDefault();
+      var step = (ev.key === "+" || ev.key === "=" || ev.code === "NumpadAdd") ? 1
+               : (ev.key === "-" || ev.key === "_" || ev.code === "NumpadSubtract") ? -1
+               : (ev.key === "0" || ev.code === "Numpad0") ? 0 : null;
+      if (step === null) return;
+      var pdfWin = pdfZoomTargetFor(doc);
+      if (pdfWin) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        try { pdfWin.__anchorPdfZoom(step); } catch (_e) {}
+        return;
+      }
+      if (api.zoom(step)) ev.preventDefault();
     }, true);
     doc.addEventListener("wheel", function (ev) {
-      if (ev.ctrlKey && ev.deltaY && api.zoom(ev.deltaY < 0 ? 1 : -1)) ev.preventDefault();
+      if (!(ev.ctrlKey || ev.metaKey) || !ev.deltaY) return;
+      var pdfWin = pdfZoomTargetFor(doc);
+      if (pdfWin) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        try { pdfWin.__anchorPdfZoom(ev.deltaY < 0 ? 1 : -1, ev.clientX, ev.clientY); } catch (_e) {}
+        return;
+      }
+      if (api.zoom(ev.deltaY < 0 ? 1 : -1)) ev.preventDefault();
     }, { capture: true, passive: false });
   };
   api.closeRightDeliverable = function () {
@@ -786,8 +861,13 @@
     var t = byId(panes[k]);
     if (!t || !t.frame || !t.frame.contentWindow) return false;
     var d = Number(deltaY) || 420;
-    try { t.frame.contentWindow.scrollBy({ top: d, behavior: "smooth" }); } catch (e) {}
-    try { t.frame.contentWindow.postMessage({ type: "anchor-scroll-deliverable", deltaY: d }, "*"); } catch (e) {}
+    var cw = t.frame.contentWindow;
+    var isCustomScroll = false;
+    try { isCustomScroll = !!cw.__anchorPdfViewer; } catch (e) {}
+    if (!isCustomScroll) {
+      try { cw.scrollBy({ top: d, behavior: "smooth" }); } catch (e) {}
+    }
+    try { cw.postMessage({ type: "anchor-scroll-deliverable", deltaY: d }, "*"); } catch (e) {}
     return true;
   };
   api.scrollDeliverable = function (deltaY) {
@@ -860,6 +940,14 @@
     if (window.__anchorWindowWired) return true;
     window.__anchorWindowWired = true;
     document.body.classList.add("hosted");
+    try {
+      if (typeof h.zoom === "function" &&
+          location.hostname !== "anchor.test" &&
+          localStorage.getItem("anchor_shell_zoom_reset_20261122") !== "1") {
+        localStorage.setItem("anchor_shell_zoom_reset_20261122", "1");
+        h.zoom(0);
+      }
+    } catch (_ez) {}
     queueRows();
     document.querySelectorAll("#winctl [data-act]").forEach(function (b) {
       b.addEventListener("click", function () { h.window_control(b.dataset.act); });

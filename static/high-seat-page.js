@@ -34,11 +34,33 @@
     else openTile(card, card.getAttribute('data-tile'), card.getAttribute('data-dir') || '');
   }
   function compactTiles(root) {
+    var campPid = (window.ANCHOR_BOOT && window.ANCHOR_BOOT.campaign_pid) || '';
     $$('.tile[data-tile]', root).forEach(function (card) {
       if (card._compact || !$('.t-body', card)) return;
       card._compact = true;
+      var pid = card.getAttribute('data-tile') || '';
+      var dir = card.getAttribute('data-dir') || '';
+      var step = card.getAttribute('data-step') || '';
+      var shelf = card.closest('.zone[data-seat]');
+      var curSeat = shelf ? (shelf.getAttribute('data-seat') || '') : '';
+      var lcHtml = '';
+      if (step) {
+        var altSeat = curSeat === 'active' ? 'deck' : 'active';
+        var altLbl = curSeat === 'active' ? '\u25be On deck' : '\u25b4 Active';
+        lcHtml += '<button type="button" class="mini cave-lc-btn" data-seat="' + altSeat + '" data-step="' + step.replace(/"/g, '&quot;') + '" title="Move to ' + (altSeat === 'deck' ? 'On deck' : 'Active') + '">' + altLbl + '</button>';
+        lcHtml += '<button type="button" class="mini cave-lc-btn" data-home="' + step.replace(/"/g, '&quot;') + '" title="Send back to its goal">\u21a9 Back to goal</button>';
+      }
+      if (pid && !(pid === campPid && (!dir || dir.toLowerCase() === 'cave of wonders'))) {
+        var stepAttr = step ? (' data-step="' + step.replace(/"/g, '&quot;') + '"') : '';
+        var pidAttr = ' data-pid="' + pid.replace(/"/g, '&quot;') + '"';
+        var dirAttr = dir ? (' data-dir="' + dir.replace(/"/g, '&quot;') + '"') : '';
+        lcHtml += '<button type="button" class="mini cave-lc-btn" data-cockpit-lifecycle="archive"' + stepAttr + pidAttr + dirAttr + ' title="Archive this AI Cockpit (reversible)">Archive</button>';
+        lcHtml += '<button type="button" class="mini cave-lc-btn danger" data-cockpit-lifecycle="retire"' + stepAttr + pidAttr + dirAttr + ' title="Retire this AI Cockpit (reversible)">Retire</button>';
+      }
       var peek = document.createElement('div'); peek.className = 't-peek';
-      peek.innerHTML = '<div class="t-peek-head"><span>Details</span><button type="button" class="t-peek-close" aria-label="Close details">\u00d7</button></div>';
+      peek.innerHTML = '<div class="t-peek-head"><span>Details</span>'
+        + (lcHtml ? ('<span class="t-peek-lc">' + lcHtml + '</span>') : '')
+        + '<button type="button" class="t-peek-close" aria-label="Close details">\u00d7</button></div>';
       ['.t-face', '.t-acts'].forEach(function (s) { var el = $(s, card); if (el) peek.appendChild(el); });
       var dialogue = document.createElement('button'); dialogue.type = 'button'; dialogue.className = 't-inline-talk'; dialogue.textContent = 'Dialogue';
       $('.t-acts', peek).appendChild(dialogue);
@@ -169,11 +191,58 @@
     location.reload();
   }
   setInterval(function () { if (pendingBuild && !tileOpen() && !typingNow()) renewBuild(pendingBuild); }, 5000);
-  var lastUndo = null;
+  var lastUndo = null, _toastTimer = null;
+  function ensureCaveToast() {
+    var el = document.getElementById('caveToast');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'caveToast';
+    el.className = 'cave-toast';
+    el.hidden = true;
+    el.setAttribute('role', 'status');
+    el.innerHTML = '<span class="ct-mark">\u2713</span><span class="ct-text" id="caveToastText"></span>'
+      + '<button type="button" class="mini ct-undo" id="caveToastUndo" hidden>undo</button>'
+      + '<button type="button" class="ct-close" id="caveToastClose" aria-label="Dismiss">\u00d7</button>';
+    document.body.appendChild(el);
+    el.querySelector('#caveToastUndo').addEventListener('click', function () {
+      var u = $('#undoBtn'); if (u && !u.disabled) u.click();
+    });
+    el.querySelector('#caveToastClose').addEventListener('click', function () {
+      el.hidden = true; if (_toastTimer) { clearTimeout(_toastTimer); _toastTimer = null; }
+    });
+    return el;
+  }
   function receipt(text, bad, undo) {
-    var r = $('#receipt'), t = $('#receiptText'); if (!r || !t) return;
-    lastUndo = undo || null; var u = $('#undoBtn'); if (u) u.hidden = !undo;
-    t.textContent = text; r.hidden = false; r.classList.toggle('bad', !!bad);
+    var r = $('#receipt'), t = $('#receiptText');
+    lastUndo = undo || null;
+    if (r && t) {
+      var u = $('#undoBtn'); if (u) u.hidden = !undo;
+      t.textContent = text; r.hidden = false; r.classList.toggle('bad', !!bad);
+    }
+    var toast = ensureCaveToast();
+    if (toast && text) {
+      toast.querySelector('#caveToastText').textContent = text;
+      toast.querySelector('.ct-mark').textContent = bad ? '\u26a0' : '\u2713';
+      toast.querySelector('#caveToastUndo').hidden = !undo;
+      toast.classList.toggle('bad', !!bad);
+      toast.hidden = false;
+      if (_toastTimer) clearTimeout(_toastTimer);
+      _toastTimer = setTimeout(function () { toast.hidden = true; _toastTimer = null; }, bad ? 8000 : (undo ? 7000 : 4500));
+    }
+  }
+  function syncServerBuild(j) {
+    if (j && j.error === 'build-mismatch') {
+      if (j.server_build && window.ANCHOR_BOOT) {
+        window.ANCHOR_BOOT.build_id = String(j.server_build);
+        renewVersion = String(j.server_build);
+        renewBuild('A new build is live \u2014 the page is renewed.');
+        return true;
+      }
+      var stale = 'This page was older than the server \u2014 renewing\u2026';
+      receipt(stale, true);
+      renewBuild(stale);
+    }
+    return false;
   }
   try { var keptLine = sessionStorage.getItem('highseat_receipt'); if (keptLine) { var kl = JSON.parse(keptLine); receipt(kl.text, !!kl.bad, kl.undo); sessionStorage.removeItem('highseat_receipt'); } } catch (e) {}
   var undoBtn = $('#undoBtn');
@@ -181,11 +250,17 @@
     if (!lastUndo) return;
     var body = JSON.parse(JSON.stringify(lastUndo)); body.pid = (window.ANCHOR_BOOT && window.ANCHOR_BOOT.campaign_pid) || '';
     undoBtn.disabled = true;
-    fetch('/api/high-seat/campaign', { method: 'POST', headers: headers(), body: JSON.stringify(body) })
-      .then(function (r) { return r.json(); })
-      .then(function (j) { undoBtn.disabled = false; if (!j || !j.ok) { receipt((j && j.receipt) || 'Nothing was undone.', true); return; }
-        renewInPlace(j.receipt, j.undo || null); })
-      .catch(function () { undoBtn.disabled = false; receipt('That did not go through — nothing was undone.', true); });
+    function postUndo(retried) {
+      return fetch('/api/high-seat/campaign', { method: 'POST', headers: headers(), body: JSON.stringify(body) })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          if (j && j.error === 'build-mismatch' && !retried && syncServerBuild(j)) return postUndo(true);
+          undoBtn.disabled = false;
+          if (!j || !j.ok) { receipt((j && j.receipt) || 'Nothing was undone.', true); return; }
+          renewInPlace(j.receipt, j.undo || null);
+        });
+    }
+    postUndo(false).catch(function () { undoBtn.disabled = false; receipt('That did not go through \u2014 nothing was undone.', true); });
   });
 
   // the rail: each destination scrolls to its section and opens it
@@ -248,24 +323,54 @@
   var acting = false;
   function act(body) {   // one act in flight; the receipt and its undo stay on the page, the change is placed in it (W4)
     if (acting || !CAMPAIGN) return; acting = true; body.pid = CAMPAIGN;
-    fetch('/api/high-seat/campaign', { method: 'POST', headers: headers(), body: JSON.stringify(body) })
+    var payload = {}; Object.keys(body).forEach(function (k) { if (k !== '_retried') payload[k] = body[k]; });
+    fetch('/api/high-seat/campaign', { method: 'POST', headers: headers(), body: JSON.stringify(payload) })
       .then(function (r) { if (r.status === 401 || r.status === 403) { return { ok: false, receipt: NOT_LOGGED_IN }; } return r.json(); })
       .then(function (j) {
+        if (j && j.error === 'build-mismatch') {
+          if (!body._retried && syncServerBuild(j)) { body._retried = true; acting = false; act(body); return; }
+          acting = false;
+          return;
+        }
         acting = false;
         if (!j || !j.ok) {
           // the act landed in part and the writer refused the rest: the receipt says so and its undo is his
           if (j && j.undo) { renewInPlace(j.receipt || 'Refused.', j.undo, true); return; }
-          receipt((j && j.receipt) || 'Nothing was done.', true); return;
+          receipt((j && (j.receipt || j.error)) || 'Nothing was done.', true); return;
         }
         renewInPlace(j.receipt, j.undo || null);
       })
-      .catch(function () { acting = false; receipt('That did not go through — nothing was done.', true); });
+      .catch(function () { acting = false; receipt('That did not go through \u2014 nothing was done.', true); });
   }
   document.addEventListener('click', function (e) {
+    var lc = e.target.closest('[data-cockpit-lifecycle]');
+    if (lc) {
+      e.preventDefault(); e.stopPropagation();
+      var kindLc = lc.getAttribute('data-cockpit-lifecycle') || 'archive';
+      var cardLc = lc.closest('.tile.peeking'); if (cardLc) hidePeek(cardLc);
+      if (kindLc === 'restore') {
+        act({
+          act: 'restore_cockpit',
+          kind: lc.getAttribute('data-dir') ? 'effort' : 'project',
+          project_id: lc.getAttribute('data-pid') || '',
+          effort_dir: lc.getAttribute('data-dir') || '',
+          label: lc.getAttribute('data-label') || ''
+        });
+      } else {
+        act({
+          act: kindLc === 'retire' ? 'retire_cockpit' : 'archive_cockpit',
+          step: lc.getAttribute('data-step') || '',
+          ref: lc.getAttribute('data-ref') || '',
+          project_id: lc.getAttribute('data-pid') || '',
+          effort_dir: lc.getAttribute('data-dir') || ''
+        });
+      }
+      return;
+    }
     var s = e.target.closest('[data-seat][data-step]');
-    if (s) { e.preventDefault(); e.stopPropagation(); act({ act: 'seat', step: s.getAttribute('data-step'), seat: s.getAttribute('data-seat') }); return; }
+    if (s) { e.preventDefault(); e.stopPropagation(); var cp1 = s.closest('.tile.peeking'); if (cp1) hidePeek(cp1); act({ act: 'seat', step: s.getAttribute('data-step'), seat: s.getAttribute('data-seat') }); return; }
     var h = e.target.closest('[data-home]');
-    if (h) { e.preventDefault(); e.stopPropagation(); act({ act: 'home', step: h.getAttribute('data-home') }); return; }
+    if (h) { e.preventDefault(); e.stopPropagation(); var cp2 = h.closest('.tile.peeking'); if (cp2) hidePeek(cp2); act({ act: 'home', step: h.getAttribute('data-home') }); return; }
     // a candidate not yet on the Campaign: on the map and in the seat in one act (2026-10-02)
     var c = e.target.closest('[data-cand-seat]');
     if (c) { e.preventDefault(); e.stopPropagation(); act({ act: 'seat_new', ref: c.getAttribute('data-ref'), name: c.getAttribute('data-name'), seat: c.getAttribute('data-cand-seat') }); }
@@ -813,8 +918,9 @@
       ($('#caveCommsDeviceFlowBox') && !$('#caveCommsDeviceFlowBox').hidden)
     );
     var collabWasOpen = $('#caveCollabStrip') && $('#caveCollabStrip').classList.contains('open');
+    var calHydrated = !!(window._caveCommsData && window._caveCommsData.ok && $('#cal .cave-mail-card, #cal .cal-ev, #cal [data-cal-day]'));
     ['shTriage', 'thisWeekBoard', 'cal', 'caveCollabStrip'].forEach(function (id) {
-      if (id === 'cal' && calBusyUi) return;
+      if (id === 'cal' && (calBusyUi || calHydrated)) return;
       if (id === 'shTriage' && wlBusyUi) return;
       var a = document.getElementById(id), b = doc.getElementById(id);
       if (a && b) morph(a, b);
@@ -827,7 +933,7 @@
     if (calWasOpen && $('#cal')) { $('#cal').classList.add('open'); if ($('#calTog')) $('#calTog').textContent = 'Collapse'; }
     if (typeof window._applyCaveCommsLayout === 'function') window._applyCaveCommsLayout(calWasLayout);
     if (!calBusyUi && typeof window._applyCaveMailFolderMode === 'function') window._applyCaveMailFolderMode(mailWasFolder);
-    if (!calBusyUi && typeof window._ensureCaveCommsDataLoaded === 'function') {
+    if (!calBusyUi && !calHydrated && typeof window._ensureCaveCommsDataLoaded === 'function') {
       window._ensureCaveCommsDataLoaded(true);
     } else if (!calBusyUi && typeof window._applySourceFilterToDOM === 'function') {
       window._applySourceFilterToDOM();
@@ -857,6 +963,12 @@
     else if (c0 && c1 && $('#candsTile', c0)) {
       var t0 = $('#candsTile', c0), n0 = $('summary .c', c0), n1 = $('summary .c', c1);
       if (n0 && n1) n0.textContent = n1.textContent;
+      var p0 = $('summary .cand-cockpit-pill', c0), p1 = $('summary .cand-cockpit-pill', c1);
+      if (p0 && p1) p0.textContent = p1.textContent;
+      ['all', 'cockpit', 'task'].forEach(function (fk) {
+        var b0 = $('.cand-flt[data-cand-filter="' + fk + '"]', c0), b1 = $('.cand-flt[data-cand-filter="' + fk + '"]', c1);
+        if (b0 && b1) b0.textContent = b1.textContent;
+      });
       $$('.cand-group', c0).forEach(function (g) { g.remove(); });
       $$('.cand-group', c1).forEach(function (g) { t0.appendChild(document.importNode(g, true)); });
       candApply();
@@ -940,6 +1052,10 @@
   // name, kind, record, acts, resume...: the card is made again from the record, an open one once it closes)
   function withoutFace(html) {
     var t = document.createElement('template'); t.innerHTML = html;
+    var tile = t.content.querySelector('.tile');
+    if (tile) { tile.removeAttribute('data-ready'); tile.removeAttribute('data-attention'); }
+    var tl = t.content.querySelector('.tlight');
+    if (tl) { tl.className = 'tlight'; tl.removeAttribute('title'); tl.removeAttribute('aria-label'); }
     var f = t.content.querySelector('.t-face'); if (f) f.innerHTML = '';
     return t.innerHTML;
   }
@@ -950,7 +1066,16 @@
   }
   function placeFace(card, fresh) {   // the record's lines; activity and attention keep their own continuing read (below)
     var a = $('.t-face', card), b = $('.t-face', fresh);
-    if (a && b && !busyIn(a)) { a.innerHTML = b.innerHTML; card._record = fresh.outerHTML; }
+    if (busyIn(a)) return;
+    if (a && b && a.innerHTML !== b.innerHTML) a.innerHTML = b.innerHTML;
+    var fl = $('.tlight', fresh), cl = $('.tlight', card);
+    if (fl && cl && !card._feedbackEpoch && !card._feedbackRecord) {
+      var m = (fl.className || '').match(/\b(green|orange|red|gray|quiet)\b/);
+      if (m) paintDot(card, m[1]);
+      paintReady(card, fresh.hasAttribute('data-ready'), 'needs your attention');
+      if (fl.title) { cl.title = fl.title; cl.setAttribute('aria-label', fl.title + (card.getAttribute('data-attention') ? '; ' + card.getAttribute('data-attention') : '')); }
+    }
+    card._record = fresh.outerHTML;
   }
   function dropCard(card) {
     if (card._warmTalk) card._warmTalk.stop();
@@ -1450,16 +1575,37 @@
     if (say) { say.addEventListener('input', grow); say.addEventListener('focus', fit); }
     setTimeout(fit, 400);
   })();
-  function doSend() {
-    var text = (say.value || '').trim(); if (!text || send.disabled) return;
+  var _caveMsgSeq = 0;
+  function _mintCaveClientMsgId(prefix) {
+    _caveMsgSeq += 1;
+    var r = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+      ? crypto.randomUUID()
+      : (Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10) + '-' + _caveMsgSeq);
+    return (prefix || 'cmsg') + '-' + r;
+  }
+  function doSend(_retried) {
+    var text = (say.value || '').trim(); if (!text || (send.disabled && !_retried)) return;
+    if (!_retried) {
+      if (say && typeof say._bumpDictationEpoch === 'function') { try { say._bumpDictationEpoch(); } catch (e) {} }
+      if (say && typeof say._stopDictation === 'function') { try { say._stopDictation({ discardPending: true }); } catch (e) {} }
+    }
+    var clientMsgId = (_retried && say && say._pendingClientMsgId) ? say._pendingClientMsgId : _mintCaveClientMsgId('say');
+    if (say) say._pendingClientMsgId = clientMsgId;
     send.disabled = true; send.textContent = 'Thinking…';
-    fetch('/api/ecgberht/high_seat_say', { method: 'POST', headers: headers(), body: JSON.stringify({ text: text, verbs_only: !!dlg }) })
+    fetch('/api/ecgberht/high_seat_say', { method: 'POST', headers: headers(), body: JSON.stringify({ text: text, verbs_only: !!dlg, client_msg_id: clientMsgId }) })
       .then(function (r) { return r.json(); })
       .then(function (j) {
+        if (j && j.error === 'build-mismatch') {
+          if (!_retried && syncServerBuild(j)) { doSend(true); return; }
+          if (say) say._pendingClientMsgId = '';
+          send.disabled = false; send.textContent = 'Send';
+          return;
+        }
         send.disabled = false; send.textContent = 'Send';
         if (j && j.ok && j.talk && dlg) { dlg.send(text, null, dlg.mainList(), send, say, DRAFT_KEY); return; }   // not a verb: the steward, in the dialogue
+        if (say) say._pendingClientMsgId = '';
         if (!j || !j.ok) { receipt((j && (j.say || j.message || j.error)) || 'No answer came back — nothing was done.', true); return; }
-        say.value = ''; say.dispatchEvent(new Event('input')); clearDraft(); receipt(j.say || '…', false, j.undo || null);
+        say.value = ''; say.dispatchEvent(new Event('input')); clearDraft(); if (say && typeof say._clearServerDraft === 'function') { try { say._clearServerDraft(); } catch (e) {} } receipt(j.say || '…', false, j.undo || null);
         if (window.StewardDialogue && typeof window.StewardDialogue.speakConciseSummary === 'function' && (j.spoken_summary || j.say)) {
           try { window.StewardDialogue.speakConciseSummary(j.spoken_summary || j.say); } catch (e) {}
         }
@@ -1470,22 +1616,30 @@
         if (j.campaign_act && !j.read_only) { renewInPlace(); return; }   // W4: the change is placed in the page; the line and its undo stay
         if (j.project_create && j.project_create.folder) projectCard(j.project_create);   // R11: the card is here, not on the old dashboard
       })
-      .catch(function () { send.disabled = false; send.textContent = 'Send'; receipt('That did not go through — nothing was done.', true); });
+      .catch(function () { if (say) say._pendingClientMsgId = ''; send.disabled = false; send.textContent = 'Send'; receipt('That did not go through — nothing was done.', true); });
   }
-  if (send) send.addEventListener('click', doSend);
-  if (say) say.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); doSend(); } });
+  if (send) send.addEventListener('click', function () { doSend(false); });
+  if (say) say.addEventListener('keydown', function (e) { if ((e.key === 'Enter' || e.keyCode === 13) && (!e.shiftKey || e.ctrlKey || e.metaKey) && !e.isComposing && e.keyCode !== 229 && !say._composing) { e.preventDefault(); doSend(false); } });
 
   // a redeploy reloads the open page, as the old home did (the verification law: a mechanism, not "refresh"): /api/version
   // every 30 s; a build other than the one this page booted with reloads it once — never while he is typing
   (function () {
-    var mine = (window.ANCHOR_BOOT && window.ANCHOR_BOOT.build_id) || '';
+    var mine = (window.ANCHOR_BOOT && window.ANCHOR_BOOT.build_id) || '', bootId = '';
     if (!mine) return;
+    fetch('/api/version', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) { if (d && d.boot) bootId = String(d.boot); }).catch(function () {});
     // W2c-4: never while he types; W3b: never under an open tile either - the reload waits (renewBuild), the draft and the open tile come back after it
     setInterval(function () {
       fetch('/api/version', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
         // W3 (2026-10-08): the banner's facts moved (a report, a verified candidate) - placed in the page, never a reload
         var h = d && d.health;
         if (h && h !== healthSig) { healthPending = h; renewInPlace(); }   // acknowledged only once placed (ChatGPT W3 r2)
+        if (d && d.boot) {
+          if (!bootId) bootId = String(d.boot);
+          else if (String(d.boot) === bootId) {
+            if (d.version && d.version !== mine) { mine = String(d.version); if (window.ANCHOR_BOOT) window.ANCHOR_BOOT.build_id = mine; }
+            return;
+          }
+        }
         var v = d && d.version; if (!v || v === mine) return;
         try { if (sessionStorage.getItem('highseat_reloaded_for') === String(v)) return; } catch (e) {}
         renewVersion = String(v); renewBuild('A new build is live \u2014 the page is renewed.');
@@ -3769,6 +3923,241 @@
     } catch (e) {}
   }
 
+  var _emailDirComposerState = { dictation_epoch: 0, dirtyUid: '', dirtyVal: null, timer: 0, hydrateTimer: 0, hydrateAbort: null, clearingNow: false };
+  function _currentEmailDraftUid() {
+    var curE = (typeof _resolveRightPaneEmailCtx === 'function' && _resolveRightPaneEmailCtx()) || _activeEmailDialogue || {};
+    return String(curE.uid || curE.id || 'default');
+  }
+  function _syncEmailDirEpochAttr() {
+    var el = document.getElementById('caveDlgStewardDirectionsInput');
+    if (el) {
+      el._composerState = _emailDirComposerState;
+      el.dataset.dictationEpoch = String(_emailDirComposerState.dictation_epoch);
+    }
+  }
+  function _bumpEmailDirectionsEpoch() {
+    _emailDirComposerState.dictation_epoch += 1;
+    _syncEmailDirEpochAttr();
+    var el = document.getElementById('caveDlgStewardDirectionsInput');
+    if (el && typeof el._stopDictation === 'function') {
+      try { el._stopDictation({ discardPending: true }); } catch (e) {}
+    }
+    return _emailDirComposerState.dictation_epoch;
+  }
+  function _flushEmailServerDraft(uid, val, keepalive) {
+    if (_emailDirComposerState.clearingNow) return Promise.resolve();
+    var u = String(uid || 'default');
+    var v = String(val == null ? '' : val);
+    _emailDirComposerState.dirtyVal = null;
+    var bodyStr = JSON.stringify({ surface: 'email', uid: u, draft: v });
+    var hdrs = window.StewardDialogue ? window.StewardDialogue.authHeaders(headers()) : headers();
+    return fetch('/api/steward/drafts?surface=email&uid=' + encodeURIComponent(u), {
+      method: 'POST',
+      headers: hdrs,
+      credentials: 'same-origin',
+      keepalive: !!keepalive,
+      body: bodyStr
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        var el = document.getElementById('caveDlgStewardDirectionsInput');
+        if (el && _currentEmailDraftUid() === u) {
+          if (j && j.unknown_state) el.dataset.draftBadge = 'UNKNOWN';
+          else if (r.ok) el.dataset.draftBadge = v ? 'SAVED' : 'EMPTY';
+        }
+        return j;
+      });
+    }).catch(function () {
+      if (keepalive && typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+        try { navigator.sendBeacon('/api/steward/drafts?surface=email&uid=' + encodeURIComponent(u), new Blob([bodyStr], { type: 'application/json' })); } catch (e) {}
+      }
+    });
+  }
+  function _deleteEmailServerDraft(uid) {
+    clearTimeout(_emailDirComposerState.timer);
+    _emailDirComposerState.dirtyVal = null;
+    var u = String(uid || 'default');
+    var hdrs = window.StewardDialogue ? window.StewardDialogue.authHeaders(headers()) : headers();
+    return fetch('/api/steward/drafts?surface=email&uid=' + encodeURIComponent(u), {
+      method: 'DELETE',
+      headers: hdrs,
+      credentials: 'same-origin',
+      keepalive: true
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        var el = document.getElementById('caveDlgStewardDirectionsInput');
+        if (el && _currentEmailDraftUid() === u) {
+          if ((j && j.unknown_state) || r.status >= 500 || !r.ok) {
+            el.dataset.draftBadge = 'UNKNOWN';
+            el.dataset.draftStatusKind = (j && j.status_kind) || 'backing-store-unreadable';
+          } else {
+            el.dataset.draftBadge = 'EMPTY';
+            el.dataset.draftStatusKind = (j && j.status_kind) || 'empty-but-valid';
+          }
+        }
+        return j;
+      });
+    }).catch(function () {});
+  }
+  function _hydrateEmailServerDraft(uid) {
+    var u = String(uid || 'default');
+    if (_emailDirComposerState.hydrateAbort) {
+      try { _emailDirComposerState.hydrateAbort.abort(); } catch (e) {}
+      _emailDirComposerState.hydrateAbort = null;
+    }
+    var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+    _emailDirComposerState.hydrateAbort = ctrl;
+    var hdrs = window.StewardDialogue ? window.StewardDialogue.authHeaders(headers()) : headers();
+    var fetchOpts = {
+      headers: hdrs,
+      credentials: 'same-origin',
+      cache: 'no-store'
+    };
+    if (ctrl) fetchOpts.signal = ctrl.signal;
+    return fetch('/api/steward/drafts?surface=email&uid=' + encodeURIComponent(u), fetchOpts).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (_emailDirComposerState.hydrateAbort === ctrl) _emailDirComposerState.hydrateAbort = null;
+        var el = document.getElementById('caveDlgStewardDirectionsInput');
+        if (!el || _currentEmailDraftUid() !== u) return;
+        if (j && j.unknown_state) { el.dataset.draftBadge = 'UNKNOWN'; return; }
+        if (!r.ok) return;
+        var d = (j && typeof j.draft === 'string') ? j.draft : '';
+        if (d && !String(el.value || '').trim()) {
+          el.value = d;
+          _saveLocalDraft(_stewardDirDraftKey(u === 'default' ? '' : u), d);
+          _autoGrowTextarea(el);
+          el.dataset.draftBadge = 'SAVED';
+        } else if (!d && !String(el.value || '').trim()) {
+          el.dataset.draftBadge = 'EMPTY';
+        }
+      });
+    }).catch(function () {
+      if (_emailDirComposerState.hydrateAbort === ctrl) _emailDirComposerState.hydrateAbort = null;
+    });
+  }
+  function _scheduleEmailServerDraftHydrate(uid) {
+    var u = String(uid || 'default');
+    clearTimeout(_emailDirComposerState.hydrateTimer);
+    if (_emailDirComposerState.hydrateAbort) {
+      try { _emailDirComposerState.hydrateAbort.abort(); } catch (e) {}
+      _emailDirComposerState.hydrateAbort = null;
+    }
+    _emailDirComposerState.hydrateTimer = setTimeout(function () {
+      if (_currentEmailDraftUid() === u) _hydrateEmailServerDraft(u);
+    }, 35);
+  }
+  function _wireEmailDirectionsComposerOnce() {
+    var dirIn = document.getElementById('caveDlgStewardDirectionsInput');
+    if (!dirIn || dirIn._w3EmailWired) return;
+    dirIn._w3EmailWired = true;
+    _syncEmailDirEpochAttr();
+    dirIn.dataset.draftBadge = dirIn.value && dirIn.value.trim() ? 'SAVED' : 'EMPTY';
+    dirIn._bumpDictationEpoch = _bumpEmailDirectionsEpoch;
+    dirIn._dispatchFencedTranscribe = function (audioB64) {
+      var reqEpoch = _emailDirComposerState.dictation_epoch;
+      var reqMsgId = _mintCaveClientMsgId('emdict');
+      var hdrs = window.StewardDialogue ? window.StewardDialogue.authHeaders(headers()) : headers();
+      return fetch('/api/steward/dictate', {
+        method: 'POST',
+        headers: hdrs,
+        body: JSON.stringify({ action: 'transcribe', audio_b64: audioB64, dictation_epoch: reqEpoch, client_msg_id: reqMsgId })
+      }).then(function (r) { return r.json(); }).then(function (j) {
+        if (reqEpoch !== _emailDirComposerState.dictation_epoch) {
+          return { fenced: true, reqEpoch: reqEpoch, currentEpoch: _emailDirComposerState.dictation_epoch };
+        }
+        if (j && j.text) {
+          var cur = dirIn.value || '';
+          var sep = (cur && !/\s$/.test(cur)) ? ' ' : '';
+          dirIn.value = cur + sep + String(j.text).trim();
+          dirIn.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        return { fenced: false, text: (j && j.text) || '' };
+      });
+    };
+    var btnsHost = document.querySelector('#caveDlgStewardDirectionsBar .cave-scribe-bar-btns');
+    if (btnsHost && !btnsHost.querySelector('[data-email-dictate-btn]')) {
+      var dictBtn = document.createElement('button');
+      dictBtn.type = 'button';
+      dictBtn.className = 'tw-btn cave-voice-btn';
+      dictBtn.setAttribute('data-email-dictate-btn', '1');
+      dictBtn.textContent = '🎤 Dictate';
+      dictBtn.title = 'Start/stop voice dictation for email directions';
+      var emActive = false, emPollT = null, emSeq = 0;
+      function stopEmDict(opts) {
+        opts = opts || {};
+        var wasActive = !!(emActive || emPollT);
+        emActive = false;
+        if (emPollT) { clearInterval(emPollT); emPollT = null; }
+        dictBtn.classList.remove('recording');
+        dictBtn.textContent = '🎤 Dictate';
+        if (wasActive) {
+          var hdrs = window.StewardDialogue ? window.StewardDialogue.authHeaders(headers()) : headers();
+          fetch('/api/steward/dictate', {
+            method: 'POST',
+            headers: hdrs,
+            body: JSON.stringify({ action: 'stop', dictation_epoch: _emailDirComposerState.dictation_epoch })
+          }).catch(function () {});
+        }
+      }
+      dirIn._stopDictation = stopEmDict;
+      dictBtn.addEventListener('click', function (ev) {
+        ev.preventDefault(); ev.stopPropagation();
+        if (emActive) { stopEmDict(); return; }
+        var startEpoch = _emailDirComposerState.dictation_epoch;
+        emActive = true;
+        dictBtn.classList.add('recording');
+        dictBtn.textContent = '⏹ Listening…';
+        dirIn.focus();
+        var hdrs = window.StewardDialogue ? window.StewardDialogue.authHeaders(headers()) : headers();
+        fetch('/api/steward/dictate', {
+          method: 'POST',
+          headers: hdrs,
+          body: JSON.stringify({ action: 'start', dictation_epoch: startEpoch })
+        }).then(function (r) { return r.json(); }).then(function (j) {
+          if (startEpoch !== _emailDirComposerState.dictation_epoch) return;
+          if (j && typeof j.last_seq === 'number') emSeq = j.last_seq;
+        }).catch(function () {});
+        if (emPollT) clearInterval(emPollT);
+        emPollT = setInterval(function () {
+          if (!emActive) return;
+          var reqEpoch = _emailDirComposerState.dictation_epoch;
+          fetch('/api/steward/dictate', {
+            method: 'POST',
+            headers: hdrs,
+            body: JSON.stringify({ action: 'poll', since: emSeq, dictation_epoch: reqEpoch })
+          }).then(function (r) { return r.json(); }).then(function (j) {
+            if (!emActive || reqEpoch !== _emailDirComposerState.dictation_epoch || !j) return;
+            if (Array.isArray(j.chunks)) {
+              j.chunks.forEach(function (c) {
+                if (c && typeof c.seq === 'number' && c.seq > emSeq) emSeq = c.seq;
+                if (c && c.text) {
+                  var cur = dirIn.value || '';
+                  var sep = (cur && !/\s$/.test(cur)) ? ' ' : '';
+                  dirIn.value = cur + sep + String(c.text).trim();
+                  dirIn.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+              });
+            }
+          }).catch(function () {});
+        }, 500);
+      });
+      btnsHost.insertBefore(dictBtn, btnsHost.firstChild);
+    }
+    var unloadEm = function () {
+      clearTimeout(_emailDirComposerState.timer);
+      if (_emailDirComposerState.dirtyVal !== null) {
+        _flushEmailServerDraft(_emailDirComposerState.dirtyUid || _currentEmailDraftUid(), _emailDirComposerState.dirtyVal, true);
+      }
+    };
+    window.addEventListener('beforeunload', unloadEm);
+    window.addEventListener('pagehide', unloadEm);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') unloadEm();
+    });
+    _hydrateEmailServerDraft(_currentEmailDraftUid());
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _wireEmailDirectionsComposerOnce);
+  else setTimeout(_wireEmailDirectionsComposerOnce, 0);
+
   function _clearLocalDraft(key) {
     try { localStorage.removeItem(key); } catch (e) {}
   }
@@ -3778,8 +4167,16 @@
     if (!t || !t.classList || !t.classList.contains('cave-autogrow-ta')) return;
     _autoGrowTextarea(t);
     if (t.id === 'caveDlgStewardDirectionsInput') {
+      if (_emailDirComposerState.clearingNow) return;
       var curE = _resolveRightPaneEmailCtx() || _activeEmailDialogue || {};
-      _saveLocalDraft(_stewardDirDraftKey(curE.uid || ''), t.value || '');
+      var curUid = curE.uid || curE.id || '';
+      _saveLocalDraft(_stewardDirDraftKey(curUid), t.value || '');
+      _emailDirComposerState.dirtyUid = curUid || 'default';
+      _emailDirComposerState.dirtyVal = t.value || '';
+      clearTimeout(_emailDirComposerState.timer);
+      _emailDirComposerState.timer = setTimeout(function () {
+        _flushEmailServerDraft(_emailDirComposerState.dirtyUid, t.value || '', false);
+      }, 220);
     } else if (t.id === 'caveSrFeedbackInput') {
       var qSr = (_srState && Array.isArray(_srState.queue)) ? (_srState.queue[_srIdx] || _srState.queue[0] || {}) : {};
       _saveLocalDraft(_srFeedbackDraftKey(qSr.id || qSr.uid || ''), t.value || '');
@@ -3991,6 +4388,7 @@
     if (dirIn) {
       dirIn.value = _loadLocalDraft(_stewardDirDraftKey(d.uid || ''));
       _autoGrowTextarea(dirIn);
+      if (!dirIn.value) _scheduleEmailServerDraftHydrate(d.uid || 'default');
     }
     var dlgPrevHost = document.getElementById('caveDlgAttachmentPreviewHost');
     if (dlgPrevHost) { dlgPrevHost.hidden = true; dlgPrevHost.innerHTML = ''; }
@@ -4188,6 +4586,7 @@
     if (splitEl) splitEl.classList.toggle('email-dlg-closed', !isOpen);
     if (barCloseBtn) barCloseBtn.hidden = !isOpen;
     if (!isOpen) {
+      ++_emailDlgReqSeq;
       _setActiveEmailDialogue(null);
       $$('#caveMailBucketsGrid .cave-mail-card').forEach(function (c) {
         c.classList.remove('is-selected');
@@ -4772,7 +5171,136 @@
   }
 
   window._caveSessionActedUids = window._caveSessionActedUids || new Map();
+  window._caveSessionActedThreads = window._caveSessionActedThreads || new Map();
+  window._triageMutationSeq = window._triageMutationSeq || 0;
   window._caveEmailActionInFlight = window._caveEmailActionInFlight || 0;
+  var _scribeClientReqSeq = 0;
+  var _scribeQueueWatchTimer = 0;
+
+  function _recordTriageTombstone(uid, meta) {
+    var u = String(uid || '').trim();
+    if (u && window._caveSessionActedUids) {
+      window._caveSessionActedUids.set(u, Date.now());
+    }
+    if (meta && typeof meta === 'object' && window._caveSessionActedThreads) {
+      var nSubj = _normThreadSubjClient(meta.subject || '');
+      var nAddr = _extractEmailAddrClient(meta.recipient || meta.sender || '');
+      if (nSubj && nSubj.length >= 3 && nAddr) {
+        window._caveSessionActedThreads.set(nSubj + '||' + nAddr, { ts: Date.now(), uid: u });
+      }
+    }
+  }
+
+  function _clearTriageTombstone(uid) {
+    var u = String(uid || '').trim();
+    if (u && window._caveSessionActedUids) {
+      window._caveSessionActedUids.delete(u);
+    }
+    if (u && window._caveSessionActedThreads) {
+      window._caveSessionActedThreads.forEach(function (val, k) {
+        if (val && val.uid === u) window._caveSessionActedThreads.delete(k);
+      });
+    }
+  }
+
+  function _isEmailTombstoned(em) {
+    if (!em) return false;
+    var u = String(em.uid || '').trim();
+    if (u && window._caveSessionActedUids && window._caveSessionActedUids.has(u)) return true;
+    if (window._caveSessionActedThreads && window._caveSessionActedThreads.size > 0) {
+      var nSubj = _normThreadSubjClient(em.subject || '');
+      var nAddr = _extractEmailAddrClient((em.sender_email || '') + ' ' + (em.from || ''));
+      if (nSubj && nAddr && window._caveSessionActedThreads.has(nSubj + '||' + nAddr)) return true;
+    }
+    return false;
+  }
+
+  function _computeClientScribeQueueCounts(countsOverride) {
+    var q = (_srState && Array.isArray(_srState.queue)) ? _srState.queue : [];
+    var localPending = 0;
+    var localReady = 0;
+    var localError = 0;
+    for (var i = 0; i < q.length; i++) {
+      var st = String((q[i] && q[i].status) || '').toLowerCase();
+      if (st === 'queued' || st === 'drafting') localPending++;
+      else if (st === 'error') localError++;
+      else localReady++;
+    }
+    if (countsOverride && typeof countsOverride === 'object') {
+      var srvPending = Number(countsOverride.pending || 0);
+      var srvReady = Number(countsOverride.ready || 0);
+      var srvError = Number(countsOverride.error || 0);
+      return {
+        pending: Math.max(localPending, srvPending),
+        ready: Math.max(localReady, srvReady),
+        error: Math.max(localError, srvError),
+        total: Math.max(q.length, Number(countsOverride.total || 0))
+      };
+    }
+    return { pending: localPending, ready: localReady, error: localError, total: q.length };
+  }
+
+  function _updateScribeQueuePill(countsOverride) {
+    var pill = document.getElementById('caveScribeQueuePill');
+    var c = _computeClientScribeQueueCounts(countsOverride);
+    if (pill) {
+      pill.setAttribute('data-scribe-queue-pending', String(c.pending));
+      pill.setAttribute('data-scribe-queue-ready', String(c.ready));
+      if (c.pending > 0) {
+        pill.setAttribute('data-scribe-queue-state', 'active');
+        pill.style.borderColor = 'rgba(245,158,11,0.65)';
+        pill.style.background = 'rgba(245,158,11,0.18)';
+        pill.style.color = '#fde68a';
+        pill.innerHTML = '&#9203; Scribe Queue &middot; ' + c.pending + ' drafting' + (c.ready > 0 ? (' (' + c.ready + ' ready)') : '');
+      } else if (c.ready > 0) {
+        pill.setAttribute('data-scribe-queue-state', 'ready');
+        pill.style.borderColor = 'rgba(16,185,129,0.55)';
+        pill.style.background = 'rgba(16,185,129,0.16)';
+        pill.style.color = '#a7f3d0';
+        pill.innerHTML = '&#9203; Scribe Queue &middot; ' + c.ready + ' ready';
+      } else {
+        pill.setAttribute('data-scribe-queue-state', 'idle');
+        pill.style.borderColor = 'rgba(56,189,248,0.45)';
+        pill.style.background = 'rgba(56,189,248,0.12)';
+        pill.style.color = '#bae6fd';
+        pill.innerHTML = '&#9203; Scribe Queue &middot; 0';
+      }
+    }
+    if (c.pending > 0) {
+      _ensureScribeQueueWatcher();
+    }
+    return c;
+  }
+  window._updateScribeQueuePill = _updateScribeQueuePill;
+
+  function _ensureScribeQueueWatcher() {
+    if (_scribeQueueWatchTimer) return;
+    _scribeQueueWatchTimer = setInterval(function () {
+      if (document.hidden) return;
+      fetch('/api/steward/comms', {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ action: 'speed_racer_act', sr_action: 'list' })
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d && d.speed_racer) {
+            _srState = _mergeSrStateKeepLocal(d.speed_racer, true);
+            _updateSrBadges();
+            var cNow = _updateScribeQueuePill(d.scribe_queue_counts);
+            var srBodyEl = document.getElementById('caveSpeedRacerBody');
+            if (srBodyEl && !srBodyEl.hidden) {
+              _renderCaveSpeedRacerTile(false, true);
+            }
+            if (cNow.pending <= 0 && _scribeQueueWatchTimer) {
+              clearInterval(_scribeQueueWatchTimer);
+              _scribeQueueWatchTimer = 0;
+            }
+          }
+        })
+        .catch(function () {});
+    }, 600);
+  }
 
   function _mergePreloadedEmailBodies(prevData, nextData) {
     if (!prevData || !nextData) return;
@@ -4820,14 +5348,14 @@
     if (Array.isArray(d.important_emails)) {
       d.important_emails = d.important_emails.filter(function (em) {
         if (!em || em.is_read === true || em.acted_upon === true) return false;
-        if (window._caveSessionActedUids && window._caveSessionActedUids.has(String(em.uid || ''))) return false;
+        if (_isEmailTombstoned(em)) return false;
         return true;
       });
     }
     if (Array.isArray(d.other_emails)) {
       d.other_emails = d.other_emails.filter(function (em) {
         if (!em || em.is_read === true || em.acted_upon === true) return false;
-        if (window._caveSessionActedUids && window._caveSessionActedUids.has(String(em.uid || ''))) return false;
+        if (_isEmailTombstoned(em)) return false;
         return true;
       });
     }
@@ -4944,6 +5472,9 @@
     if (d.speed_racer && typeof _syncSpeedRacerFromServer === 'function') {
       _syncSpeedRacerFromServer(d.speed_racer);
     }
+    if (d.scribe_queue_counts) {
+      _updateScribeQueuePill(d.scribe_queue_counts);
+    }
     setTimeout(_syncCaveMailOvalScrollbar, 35);
     var accBar = document.getElementById('caveConnectedAccountsBar');
     var syncBtnToolbar = document.getElementById('btnCaveCommsSync');
@@ -5015,10 +5546,16 @@
 
   function _ensureCaveCommsDataLoaded(force) {
     if (_caveCommsData && !force) return Promise.resolve(_caveCommsData);
+    var seqAtStart = window._triageMutationSeq || 0;
     return fetch('/api/steward/comms?slim=1', { headers: headers(), cache: 'no-store' })
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.ok) {
+          if (d.scribe_queue_counts) _updateScribeQueuePill(d.scribe_queue_counts);
+          if ((window._triageMutationSeq || 0) !== seqAtStart) {
+            // A user triage or Send-to-Scribe happened while this GET was in flight — never overwrite or cycle the pane!
+            return _caveCommsData || d;
+          }
           _mergePreloadedEmailBodies(_caveCommsData, d);
           _caveCommsData = d;
           _hydrateMailCardsFromCommsData(d);
@@ -5107,11 +5644,11 @@
     var matchedUids = Object.keys(matchedSet);
     var primaryUid = u || matchedUids[0] || '';
     if (!primaryUid && !meta.forceAdvance) return;
-    if (window._caveSessionActedUids) {
-      matchedUids.forEach(function (mu) {
-        if (mu) window._caveSessionActedUids.set(mu, Date.now());
-      });
-    }
+    ++_emailDlgReqSeq;
+    matchedUids.forEach(function (mu) {
+      if (mu) _recordTriageTombstone(mu, meta);
+    });
+    if (primaryUid) _recordTriageTombstone(primaryUid, meta);
     window._caveEmailActionInFlight = (window._caveEmailActionInFlight || 0) + 1;
     setTimeout(function () {
       window._caveEmailActionInFlight = Math.max(0, (window._caveEmailActionInFlight || 1) - 1);
@@ -5652,6 +6189,24 @@
       _setEmailDialogueOpen(false, 'Closed Email dialogue.');
       return;
     }
+    var dlgClearDirBtn = e.target.closest && e.target.closest('#btnCaveDlgClearDirectionsDraft');
+    if (dlgClearDirBtn) {
+      e.preventDefault(); e.stopPropagation();
+      _bumpEmailDirectionsEpoch();
+      var clrE = _resolveRightPaneEmailCtx() || _activeEmailDialogue || {};
+      var clrUid = clrE.uid || clrE.id || '';
+      var clrInput = document.getElementById('caveDlgStewardDirectionsInput');
+      _emailDirComposerState.clearingNow = true;
+      if (clrInput) {
+        clrInput.value = '';
+        _autoGrowTextarea(clrInput);
+        clrInput.focus();
+      }
+      _emailDirComposerState.clearingNow = false;
+      _clearLocalDraft(_stewardDirDraftKey(clrUid));
+      _deleteEmailServerDraft(clrUid || 'default');
+      return;
+    }
     var dlgStewardActionBtn = e.target.closest && e.target.closest('#btnCaveDlgSendStewardAction, #btnCaveDlgMullSteward');
     if (dlgStewardActionBtn) {
       e.preventDefault(); e.stopPropagation();
@@ -5667,6 +6222,7 @@
           return;
         }
       }
+      _bumpEmailDirectionsEpoch();
       var curActE = _resolveRightPaneEmailCtx() || _activeEmailDialogue;
       if (!curActE) {
         receipt('Select an email first so the Cave of Wonders Steward can attach its context.', true);
@@ -5674,12 +6230,14 @@
       }
       var actUid = curActE.uid || curActE.id || '';
       var fullBody = curActE.body || curActE.incoming_body || curActE.incoming_snippet || curActE.snippet || '';
+      var actClientMsgId = 'emsa-' + Date.now() + '-' + (++_scribeClientReqSeq);
       dlgStewardActionBtn.disabled = true;
       fetch('/api/steward/comms', {
         method: 'POST',
         headers: headers(),
         body: JSON.stringify({
           action: 'email_steward_action',
+          client_msg_id: actClientMsgId,
           uid: actUid,
           account_id: curActE.account_id || '',
           account_badge: curActE.account_badge || curActE.account || 'Institutional 365',
@@ -5690,6 +6248,7 @@
           body: fullBody,
           snippet: fullBody.slice(0, 4000),
           comment: commentTxt,
+          async_draft: true,
           also_queue_speed_racer: false
         })
       })
@@ -5699,7 +6258,11 @@
           var d = res.data || {};
           if (res.status === 503) {
             _clearLocalDraft(_stewardDirDraftKey(actUid));
-            if (actInput) { actInput.value = ''; _autoGrowTextarea(actInput); }
+            _deleteEmailServerDraft(actUid || 'default');
+            if (actInput && (!_activeEmailDialogue || String(_activeEmailDialogue.uid || '') === String(actUid))) {
+              actInput.value = '';
+              _autoGrowTextarea(actInput);
+            }
             if (d.working_list && typeof _renderWorkingListSpine === 'function') {
               _wlState = d.working_list;
               _renderWorkingListSpine();
@@ -5708,26 +6271,25 @@
             return;
           }
           if (res.status < 400 && d && d.ok) {
+            _clearLocalDraft(_stewardDirDraftKey(actUid));
+            _deleteEmailServerDraft(actUid || 'default');
+            if (actInput && (!_activeEmailDialogue || String(_activeEmailDialogue.uid || '') === String(actUid))) {
+              actInput.value = '';
+              _autoGrowTextarea(actInput);
+            }
             if (actUid) {
               _optimisticallyRemoveEmailFromLists(actUid, '\ud83e\udded Steward', commentTxt);
             }
-            _clearLocalDraft(_stewardDirDraftKey(actUid));
-            if (actInput) { actInput.value = ''; _autoGrowTextarea(actInput); }
             if (d.working_list && typeof _renderWorkingListSpine === 'function') {
               _wlState = d.working_list;
               _renderWorkingListSpine();
             }
-            if (!_caveCommsData) _caveCommsData = { ok: true };
-            if (Array.isArray(d.important_emails)) _caveCommsData.important_emails = _mergeStableEmailOrder(_caveCommsData.important_emails, d.important_emails);
-            if (Array.isArray(d.other_emails)) _caveCommsData.other_emails = d.other_emails;
-            if (Array.isArray(d.acted_upon_emails)) _caveCommsData.acted_upon_emails = d.acted_upon_emails;
-            if (Array.isArray(d.all_emails)) _caveCommsData.all_emails = d.all_emails;
             if (d.speed_racer) {
-              _caveCommsData.speed_racer = d.speed_racer;
-              _syncSpeedRacerFromServer(d.speed_racer);
+              if (_caveCommsData) _caveCommsData.speed_racer = d.speed_racer;
+              _srState = _mergeSrStateKeepLocal(d.speed_racer, true);
+              _updateSrBadges();
+              _updateScribeQueuePill(d.scribe_queue_counts);
             }
-            _caveCommsData._interleavedOnce = true;
-            _hydrateMailCardsFromCommsData(_caveCommsData);
             if (dlg && typeof dlg.resume === 'function') {
               try { dlg.resume(); } catch (err) {}
             }
@@ -5761,7 +6323,8 @@
       var replyBodyEl = document.getElementById('caveReplyBody');
       var curDraftBody = replyBodyEl ? replyBodyEl.value.trim() : '';
       var sdAtts = (curE.steward_draft && Array.isArray(curE.steward_draft.attachments)) ? curE.steward_draft.attachments : [];
-      var srUid = curE.uid || '';
+      var srUid = String(curE.uid || '');
+      var origSubjForMatch = String(curE.subject || '');
       var replyToInputEl = document.getElementById('caveReplyTo');
       var replyCcInputEl = document.getElementById('caveReplyCc');
       var activeModeBtnEl = document.querySelector('[data-dlg-reply-mode].active');
@@ -5776,14 +6339,60 @@
       var srBody = curE.body || curE.snippet || '';
       var srAcctId = curE.account_id || '';
       var srAcctBadge = curE.account_badge || 'Institutional 365';
-      var origSrBtnHtml = dlgSrBtn.innerHTML;
-      dlgSrBtn.disabled = true;
-      dlgSrBtn.innerHTML = '&#9203; Drafting&hellip;';
+      var clientReqId = 'srq-' + Date.now() + '-' + (++_scribeClientReqSeq);
+      var optDraftId = 'sr-opt-' + clientReqId;
+
+      // 0ms (<50 ms) synchronous optimistic enqueue: clear ONLY srUid's draft, update #caveScribeQueuePill,
+      // and advance #caveEmailDialoguePane immediately without disabling #btnCaveDlgSendDirectionsToSr or scrolling!
+      _bumpEmailDirectionsEpoch();
+      ++window._triageMutationSeq;
+      clearTimeout(_emailDirComposerState.timer);
+      _emailDirComposerState.dirtyVal = null;
+      _clearLocalDraft(_stewardDirDraftKey(srUid));
+      _emailDirComposerState.clearingNow = true;
+      if (dirInput) {
+        dirInput.value = '';
+        _autoGrowTextarea(dirInput);
+      }
+      _emailDirComposerState.clearingNow = false;
+      if (!_srState || typeof _srState !== 'object') _srState = { queue: [], archive: [], auto_open_ts: 0 };
+      if (!Array.isArray(_srState.queue)) _srState.queue = [];
+      _srState.queue.push({
+        id: optDraftId,
+        client_req_id: clientReqId,
+        uid: srUid || optDraftId,
+        account_id: srAcctId,
+        account: srAcctBadge,
+        account_badge: srAcctBadge,
+        reply_mode: activeReplyMode,
+        to: srTo,
+        cc: srCc,
+        bcc: srBcc,
+        subject: srSubj,
+        steward_directions: userDirs,
+        status: 'queued',
+        draft_body: userDirs ? '' : curDraftBody,
+        updated_at_ts: Date.now() / 1000
+      });
+      _updateSrBadges();
+      _updateScribeQueuePill();
+      _optimisticallyRemoveEmailFromLists(
+        srUid,
+        '\u23f3 Queued for Scribe',
+        userDirs ? ('Queued for Scribe: ' + userDirs.slice(0, 60)) : 'Queued for Scribe FIFO worker',
+        { subject: origSubjForMatch || srSubj, recipient: srTo, forceAdvance: true }
+      );
+      receipt('\u23f3 Queued "' + (origSubjForMatch || srSubj) + '" for Scribe \u2014 advancing immediately!');
+
       fetch('/api/steward/comms', {
         method: 'POST',
         headers: headers(),
         body: JSON.stringify({
           action: 'speed_racer_queue',
+          async_draft: true,
+          open_speed_racer: false,
+          client_req_id: clientReqId,
+          client_msg_id: clientReqId,
           uid: srUid,
           account_id: srAcctId,
           account: srAcctBadge,
@@ -5801,37 +6410,42 @@
       })
         .then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
         .then(function (res) {
-          dlgSrBtn.disabled = false;
-          dlgSrBtn.innerHTML = origSrBtnHtml;
           var d = res.data || {};
           if (res.status < 400 && d && d.ok) {
-            _optimisticallyRemoveEmailFromLists(srUid, '\ud83c\udfce\ufe0f Speed Racer', 'Queued in Speed Racer for review');
-            _clearLocalDraft(_stewardDirDraftKey(srUid));
-            if (dirInput) { dirInput.value = ''; _autoGrowTextarea(dirInput); }
-            if (!_caveCommsData) _caveCommsData = { ok: true };
-            if (Array.isArray(d.important_emails)) _caveCommsData.important_emails = _mergeStableEmailOrder(_caveCommsData.important_emails, d.important_emails);
-            if (Array.isArray(d.other_emails)) _caveCommsData.other_emails = d.other_emails;
-            if (Array.isArray(d.acted_upon_emails)) _caveCommsData.acted_upon_emails = d.acted_upon_emails;
-            if (d.speed_racer) _caveCommsData.speed_racer = d.speed_racer;
-            _caveCommsData._interleavedOnce = true;
-            _hydrateMailCardsFromCommsData(_caveCommsData);
-            if (d.speed_racer) {
-              _srState = _mergeSrStateKeepLocal(d.speed_racer, true);
-              _srIdx = 0;
-              window._srUserCollapsed = false;
-              _setSpeedRacerExpanded(true);
-              _renderCaveSpeedRacerTile(true, true);
-              var srTile = document.getElementById('caveSpeedRacerTile');
-              if (srTile && srTile.scrollIntoView) srTile.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            // Only clear dirInput if the reading pane is somehow still on srUid (never touch the next email's draft!)
+            if (dirInput && _activeEmailDialogue && String(_activeEmailDialogue.uid || '') === srUid) {
+              dirInput.value = '';
+              _autoGrowTextarea(dirInput);
             }
-            receipt('\ud83c\udfce\ufe0f Drafted in Speed Racer' + (userDirs ? ' with your Scribe directions' : '') + ' & moved email out of Prime to Acted Upon!');
+            if (d.speed_racer) {
+              if (_caveCommsData) _caveCommsData.speed_racer = d.speed_racer;
+              var mergedSrv = _mergeSrStateKeepLocal(d.speed_racer, true);
+              // Keep any other in-flight optimistic items whose POSTs haven't resolved yet
+              var stillInFlightOpt = (_srState && Array.isArray(_srState.queue))
+                ? _srState.queue.filter(function (it) {
+                    return it && String(it.id || '').indexOf('sr-opt-') === 0 && String(it.id) !== optDraftId;
+                  })
+                : [];
+              mergedSrv.queue = (mergedSrv.queue || []).concat(stillInFlightOpt);
+              _srState = mergedSrv;
+            }
+            _updateSrBadges();
+            _updateScribeQueuePill(d.scribe_queue_counts);
           } else {
+            if (_srState && Array.isArray(_srState.queue)) {
+              _srState.queue = _srState.queue.filter(function (it) { return it && String(it.id || '') !== optDraftId; });
+            }
+            _updateSrBadges();
+            _updateScribeQueuePill(d && d.scribe_queue_counts);
             receipt((d && (d.message || d.error)) || 'Could not queue draft in Speed Racer.', true);
           }
         })
         .catch(function () {
-          dlgSrBtn.disabled = false;
-          dlgSrBtn.innerHTML = origSrBtnHtml;
+          if (_srState && Array.isArray(_srState.queue)) {
+            _srState.queue = _srState.queue.filter(function (it) { return it && String(it.id || '') !== optDraftId; });
+          }
+          _updateSrBadges();
+          _updateScribeQueuePill();
           receipt('Speed Racer queue request could not reach Anchor.', true);
         });
       return;
@@ -5869,23 +6483,33 @@
       var curSubj = attrSubj || curTriageE.subject || '';
       var curBadge = curTriageE.account_badge || '';
       var dlgRollback = (fb === 'spam') ? _snapshotSpamRollbackState(curUid) : null;
-      dlgTriageBtn.disabled = true;
+      var triageMutSeq = ++window._triageMutationSeq;
+      var triageClientReqId = 'tri-' + Date.now() + '-' + triageMutSeq;
+      // NEVER disable shared reading-pane controls (#btnCaveDlgSeen, #btnCaveDlgDowngrade, etc.) across emails!
       if (fb === 'spam') {
         window._lastCaveSpamCtx = { uid: curUid, account_id: curAcctId, sender_email: curSender, from: curSender, subject: curSubj, account_badge: curBadge, from_sr: false };
         _syncCaveSpamUndoUi(window._lastCaveSpamCtx, false);
-        _optimisticallyRemoveEmailFromLists(curUid, '\ud83d\udeab Spam', 'Marked Spam');
+        _optimisticallyRemoveEmailFromLists(curUid, '\ud83d\udeab Spam', 'Marked Spam', { subject: curSubj, recipient: curSender, forceAdvance: true });
       } else if (fb === 'unspam') {
-        if (window._caveSessionActedUids) window._caveSessionActedUids.delete(String(curUid || ''));
+        _clearTriageTombstone(curUid);
       } else if (fb === 'upgrade') {
-        if (window._caveSessionActedUids) window._caveSessionActedUids.delete(String(curUid || ''));
+        _clearTriageTombstone(curUid);
       } else {
-        _optimisticallyRemoveEmailFromLists(curUid, fb === 'already_replied' ? '\u2713 Answered' : (fb === 'done' ? '\u2713 Done' : '\u2713 Acted'), 'Marked ' + fb);
+        _optimisticallyRemoveEmailFromLists(
+          curUid,
+          fb === 'already_replied' ? '\u2713 Answered' : (fb === 'done' ? '\u2713 Done' : (fb === 'downgrade' ? '\u2b07 Irrational' : '\ud83d\udc41 Looked At')),
+          'Marked ' + fb,
+          { subject: curSubj, recipient: curSender, forceAdvance: true }
+        );
       }
+      var isRestoreOrSpam = (fb === 'unspam' || fb === 'upgrade' || fb === 'spam');
       fetch('/api/steward/comms', {
         method: 'POST',
         headers: headers(),
         body: JSON.stringify({
           action: 'email_triage_feedback',
+          fast_triage: !isRestoreOrSpam,
+          client_req_id: triageClientReqId,
           uid: curUid,
           account_id: curAcctId,
           sender: curSender,
@@ -5898,7 +6522,6 @@
       })
         .then(function (r) { return r.json().then(function (d) { return { okHttp: r.status < 400, data: d }; }); })
         .then(function (res) {
-          dlgTriageBtn.disabled = false;
           var d = res.data;
           if (res.okHttp && d && d.ok) {
             if (fb === 'unspam') {
@@ -5909,21 +6532,25 @@
               window._lastCaveSpamCtx = null;
               _syncCaveSpamUndoUi(null, false);
             }
-            if (!_caveCommsData) _caveCommsData = { ok: true };
-            if (Array.isArray(d.important_emails)) _caveCommsData.important_emails = _mergeStableEmailOrder(_caveCommsData.important_emails, d.important_emails);
-            if (Array.isArray(d.other_emails)) _caveCommsData.other_emails = d.other_emails;
-            if (Array.isArray(d.acted_upon_emails)) _caveCommsData.acted_upon_emails = d.acted_upon_emails;
             if (d.speed_racer) {
-              _caveCommsData.speed_racer = d.speed_racer;
+              if (_caveCommsData) _caveCommsData.speed_racer = d.speed_racer;
               _srState = _mergeSrStateKeepLocal(d.speed_racer, true);
-              _renderCaveSpeedRacerTile(true, true);
+              _updateSrBadges();
+              _updateScribeQueuePill(d.scribe_queue_counts);
             }
             if (d.working_list) {
               _wlState = d.working_list;
               _renderWorkingListSpine();
             }
-            _caveCommsData._interleavedOnce = true;
-            _hydrateMailCardsFromCommsData(_caveCommsData);
+            // Only re-hydrate lists on restore/spam when no newer triage happened — NEVER cycle #caveEmailDialoguePane on Seen/Downgrade!
+            if (isRestoreOrSpam && triageMutSeq === window._triageMutationSeq) {
+              if (!_caveCommsData) _caveCommsData = { ok: true };
+              if (Array.isArray(d.important_emails)) _caveCommsData.important_emails = _mergeStableEmailOrder(_caveCommsData.important_emails, d.important_emails);
+              if (Array.isArray(d.other_emails)) _caveCommsData.other_emails = d.other_emails;
+              if (Array.isArray(d.acted_upon_emails)) _caveCommsData.acted_upon_emails = d.acted_upon_emails;
+              _caveCommsData._interleavedOnce = true;
+              _hydrateMailCardsFromCommsData(_caveCommsData);
+            }
             receipt(d.note || (fb === 'unspam' ? 'Reversed Spam and restored email to Active Inbox.' : 'Email moved out of Prime Inbox to Acted Upon.'));
           } else {
             if (fb === 'spam') _restoreSpamRollbackState(dlgRollback, '');
@@ -5931,7 +6558,6 @@
           }
         })
         .catch(function () {
-          dlgTriageBtn.disabled = false;
           if (fb === 'spam') _restoreSpamRollbackState(dlgRollback, '');
           receipt('Email triage request did not reach Anchor.', true);
         });
@@ -6054,29 +6680,33 @@
         || '';
       var tSender = triageBtn.getAttribute('data-mail-sender') || (fallbackSpamCtx && fallbackSpamCtx.sender_email) || '';
       var wasOpened = mCard ? (mCard.getAttribute('data-mail-opened') === '1') : false;
-      triageBtn.disabled = true;
       var tSubj = triageBtn.getAttribute('data-mail-subject') || (fallbackSpamCtx && fallbackSpamCtx.subject) || '';
       var cardRollback = (tAct === 'spam') ? _snapshotSpamRollbackState(tUid) : null;
+      var rowMutSeq = ++window._triageMutationSeq;
+      var rowReqId = 'tri-row-' + Date.now() + '-' + rowMutSeq;
+      var isRowRestoreOrSpam = (tAct === 'unspam' || tAct === 'unact' || tAct === 'upgrade' || tAct === 'spam');
       if (tAct === 'spam') {
         window._lastCaveSpamCtx = { uid: tUid, account_id: tAcctId, sender_email: tSender, from: tSender, subject: tSubj, from_sr: false };
         _syncCaveSpamUndoUi(window._lastCaveSpamCtx, false);
         if (window._optimisticallyRemoveEmailFromLists) {
-          window._optimisticallyRemoveEmailFromLists(tUid, '\ud83d\udeab Spam', 'Marked Spam');
+          window._optimisticallyRemoveEmailFromLists(tUid, '\ud83d\udeab Spam', 'Marked Spam', { subject: tSubj, recipient: tSender });
         }
       } else if (tAct === 'unspam') {
-        if (window._caveSessionActedUids) window._caveSessionActedUids.delete(String(tUid || ''));
+        _clearTriageTombstone(tUid);
       } else if (tAct === 'unact' || tAct === 'upgrade') {
-        if (window._caveSessionActedUids) window._caveSessionActedUids.delete(String(tUid || ''));
+        _clearTriageTombstone(tUid);
         _captureNextEmailInCurrentList(tUid);
         if (_activeEmailDialogue && _activeEmailDialogue.uid === tUid) _setActiveEmailDialogue(null);
       } else if (window._optimisticallyRemoveEmailFromLists) {
-        window._optimisticallyRemoveEmailFromLists(tUid, '\u2713 Acted', 'Marked ' + tAct);
+        window._optimisticallyRemoveEmailFromLists(tUid, '\u2713 Acted', 'Marked ' + tAct, { subject: tSubj, recipient: tSender });
       }
       fetch('/api/steward/comms', {
         method: 'POST',
         headers: headers(),
         body: JSON.stringify({
           action: 'email_triage_feedback',
+          fast_triage: !isRowRestoreOrSpam,
+          client_req_id: rowReqId,
           uid: tUid,
           account_id: tAcctId,
           sender: tSender,
@@ -6088,7 +6718,6 @@
       })
         .then(function (r) { return r.json().then(function (d) { return { okHttp: r.status < 400, data: d }; }); })
         .then(function (res) {
-          triageBtn.disabled = false;
           var d = res.data;
           if (res.okHttp && d && d.ok) {
             if (tAct === 'unspam') {
@@ -6099,21 +6728,24 @@
               window._lastCaveSpamCtx = null;
               _syncCaveSpamUndoUi(null, false);
             }
-            if (!_caveCommsData) _caveCommsData = { ok: true };
-            if (Array.isArray(d.important_emails)) _caveCommsData.important_emails = _mergeStableEmailOrder(_caveCommsData.important_emails, d.important_emails);
-            if (Array.isArray(d.other_emails)) _caveCommsData.other_emails = d.other_emails;
-            if (Array.isArray(d.acted_upon_emails)) _caveCommsData.acted_upon_emails = d.acted_upon_emails;
             if (d.speed_racer) {
-              _caveCommsData.speed_racer = d.speed_racer;
+              if (_caveCommsData) _caveCommsData.speed_racer = d.speed_racer;
               _srState = _mergeSrStateKeepLocal(d.speed_racer, true);
-              _renderCaveSpeedRacerTile(true, true);
+              _updateSrBadges();
+              _updateScribeQueuePill(d.scribe_queue_counts);
             }
             if (d.working_list) {
               _wlState = d.working_list;
               _renderWorkingListSpine();
             }
-            _caveCommsData._interleavedOnce = true;
-            _hydrateMailCardsFromCommsData(_caveCommsData);
+            if (isRowRestoreOrSpam && rowMutSeq === window._triageMutationSeq) {
+              if (!_caveCommsData) _caveCommsData = { ok: true };
+              if (Array.isArray(d.important_emails)) _caveCommsData.important_emails = _mergeStableEmailOrder(_caveCommsData.important_emails, d.important_emails);
+              if (Array.isArray(d.other_emails)) _caveCommsData.other_emails = d.other_emails;
+              if (Array.isArray(d.acted_upon_emails)) _caveCommsData.acted_upon_emails = d.acted_upon_emails;
+              _caveCommsData._interleavedOnce = true;
+              _hydrateMailCardsFromCommsData(_caveCommsData);
+            }
             receipt(d.note || 'Updated Steward email triage preference.');
           } else {
             if (tAct === 'spam') _restoreSpamRollbackState(cardRollback, '');
@@ -6121,7 +6753,6 @@
           }
         })
         .catch(function () {
-          triageBtn.disabled = false;
           if (tAct === 'spam') _restoreSpamRollbackState(cardRollback, '');
           receipt('Email triage request did not reach Anchor.', true);
         });
@@ -6612,6 +7243,7 @@
     if (b3) b3.textContent = n + (n === 1 ? ' Draft Awaiting Approval' : ' Drafts Awaiting Approval');
     if (bArc) bArc.textContent = String(arch.length);
     if (bArcBar) bArcBar.textContent = String(arch.length);
+    _updateScribeQueuePill();
     _renderCaveSpeedRacerArchive();
   }
 
@@ -6752,9 +7384,16 @@
     if (_srIdx >= q.length) _srIdx = 0;
     if (_srIdx < 0) _srIdx = q.length - 1;
     var item = _applySrLocalEditToItem(q[_srIdx]);
+    var queueSig = q.map(function (it) { return String(it.id || '') + ':' + String(it.updated_at_ts || 0); }).join('|');
     var activeCard = host.querySelector('.sr-card[data-sr-active-id]');
     var activeBodyEl = document.getElementById('caveSrBodyInput');
-    if (!forceRebuild && activeCard && activeBodyEl && String(activeCard.getAttribute('data-sr-active-id') || '') === String(item.id || '')) {
+    if (
+      !forceRebuild &&
+      activeCard &&
+      activeBodyEl &&
+      String(activeCard.getAttribute('data-sr-active-id') || '') === String(item.id || '') &&
+      (item._dirty || String(activeCard.getAttribute('data-sr-queue-sig') || '') === queueSig)
+    ) {
       return;
     }
     var navPills = q.map(function (it, idx) {
@@ -6774,7 +7413,7 @@
       ? '\u270e Editing \u2014 auto-saving\u2026'
       : (item.user_edited ? '\u2713 Edits saved & Scribe updated' : '\u2713 Direct edits auto-save & teach Scribe');
     host.innerHTML =
-      '<div class="sr-card" data-sr-active-id="' + _escH(item.id || '') + '">' +
+      '<div class="sr-card" data-sr-active-id="' + _escH(item.id || '') + '" data-sr-queue-sig="' + _escH(queueSig) + '">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding-bottom:7px;border-bottom:1px solid #1e293b">' +
           '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
             '<span class="comms-badge amber" style="font-weight:800">Draft ' + (_srIdx + 1) + ' of ' + q.length + '</span>' +
@@ -6937,11 +7576,16 @@
         }
       }
     }
-    if (Array.isArray(_srState.queue) && _srState.queue.length > 0 && !window._srUserCollapsed) {
-      _setSpeedRacerExpanded(true);
-    } else if (!Array.isArray(_srState.queue) || _srState.queue.length === 0) {
+    var hasReadyDrafts = Array.isArray(_srState.queue) && _srState.queue.some(function (it) {
+      var st = String((it && it.status) || '').toLowerCase();
+      return st !== 'queued' && st !== 'drafting' && st !== 'error';
+    });
+    if (!Array.isArray(_srState.queue) || _srState.queue.length === 0) {
       _setSpeedRacerExpanded(false);
+    } else if (hasReadyDrafts && !window._srUserCollapsed && !($('#caveEmailDialoguePane') && !$('#caveEmailDialoguePane').hidden)) {
+      _setSpeedRacerExpanded(true);
     }
+    _updateScribeQueuePill();
     _renderCaveSpeedRacerTile(!!forceRebuild);
     var ts = Number(srObj.auto_open_ts || 0);
     if (ts > _srLastAutoOpenTs) {
@@ -7202,14 +7846,40 @@
           ? ((cleanDispQ.indexOf(',') >= 0 || cleanDispQ.indexOf(';') >= 0) ? ('"' + cleanDispQ + '" <' + mTo + '>') : (cleanDispQ + ' <' + mTo + '>'))
           : mTo;
       }
-      var origQueueMailHtml = queueMailBtn.innerHTML;
-      queueMailBtn.disabled = true;
-      queueMailBtn.innerHTML = '&#9203;';
+      var rowClientReqId = 'srq-row-' + Date.now() + '-' + (++_scribeClientReqSeq);
+      var rowOptId = 'sr-opt-' + rowClientReqId;
+      ++window._triageMutationSeq;
+      if (!_srState || typeof _srState !== 'object') _srState = { queue: [], archive: [], auto_open_ts: 0 };
+      if (!Array.isArray(_srState.queue)) _srState.queue = [];
+      _srState.queue.push({
+        id: rowOptId,
+        client_req_id: rowClientReqId,
+        uid: mUid || rowOptId,
+        account_id: mAcctIdQ,
+        account: mAcct,
+        to: formattedCardTo,
+        subject: mSubj.indexOf('Re:') === 0 ? mSubj : ('Re: ' + mSubj),
+        status: 'queued',
+        updated_at_ts: Date.now() / 1000
+      });
+      _updateSrBadges();
+      _updateScribeQueuePill();
+      if (window._optimisticallyRemoveEmailFromLists) {
+        window._optimisticallyRemoveEmailFromLists(mUid, '\u23f3 Queued for Scribe', 'Queued in Scribe FIFO worker', {
+          subject: mSubj,
+          recipient: mTo,
+          forceAdvance: Boolean(_activeEmailDialogue && String(_activeEmailDialogue.uid || '') === String(mUid))
+        });
+      }
+      receipt('\u23f3 Queued "' + mSubj + '" for Scribe FIFO worker.');
       fetch('/api/steward/comms', {
         method: 'POST',
         headers: headers(),
         body: JSON.stringify({
           action: 'speed_racer_queue',
+          async_draft: true,
+          open_speed_racer: false,
+          client_req_id: rowClientReqId,
           uid: mUid,
           account_id: mAcctIdQ,
           from: mFrom,
@@ -7224,39 +7894,35 @@
         .then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
         .then(function (res) {
           var d = res.data;
-          queueMailBtn.disabled = false;
-          queueMailBtn.innerHTML = origQueueMailHtml;
           if (res.status >= 400 || !d || !d.ok) {
+            if (_srState && Array.isArray(_srState.queue)) {
+              _srState.queue = _srState.queue.filter(function (it) { return it && String(it.id || '') !== rowOptId; });
+            }
+            _updateSrBadges();
+            _updateScribeQueuePill(d && d.scribe_queue_counts);
             receipt((d && (d.message || d.error)) || 'Could not queue Speed Racer draft.', true);
             return;
           }
-          if (window._optimisticallyRemoveEmailFromLists) {
-            window._optimisticallyRemoveEmailFromLists(mUid, '\ud83c\udfce\ufe0f Speed Racer', 'Queued in Speed Racer for review');
-          } else {
-            _captureNextEmailInCurrentList(mUid);
-          }
           if (d.speed_racer) {
-            if (!_caveCommsData) _caveCommsData = { ok: true };
-            if (Array.isArray(d.important_emails)) _caveCommsData.important_emails = _mergeStableEmailOrder(_caveCommsData.important_emails, d.important_emails);
-            if (Array.isArray(d.other_emails)) _caveCommsData.other_emails = d.other_emails;
-            if (Array.isArray(d.acted_upon_emails)) _caveCommsData.acted_upon_emails = d.acted_upon_emails;
-            _caveCommsData._interleavedOnce = true;
-            _hydrateMailCardsFromCommsData(_caveCommsData);
-            _srState = _mergeSrStateKeepLocal(d.speed_racer);
-            _srIdx = 0;
-            window._srUserCollapsed = false;
-            _setSpeedRacerExpanded(true);
-            _renderCaveSpeedRacerTile(true);
-            var srTile = document.getElementById('caveSpeedRacerTile');
-            if (srTile) {
-              try { srTile.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (err) {}
-            }
-            receipt('\ud83c\udfce\ufe0f Queued "' + mSubj + '" into Speed Racer for your review & approval.');
+            if (_caveCommsData) _caveCommsData.speed_racer = d.speed_racer;
+            var mergedRowSr = _mergeSrStateKeepLocal(d.speed_racer, true);
+            var stillOptRow = (_srState && Array.isArray(_srState.queue))
+              ? _srState.queue.filter(function (it) {
+                  return it && String(it.id || '').indexOf('sr-opt-') === 0 && String(it.id) !== rowOptId;
+                })
+              : [];
+            mergedRowSr.queue = (mergedRowSr.queue || []).concat(stillOptRow);
+            _srState = mergedRowSr;
           }
+          _updateSrBadges();
+          _updateScribeQueuePill(d.scribe_queue_counts);
         })
         .catch(function () {
-          queueMailBtn.disabled = false;
-          queueMailBtn.innerHTML = origQueueMailHtml;
+          if (_srState && Array.isArray(_srState.queue)) {
+            _srState.queue = _srState.queue.filter(function (it) { return it && String(it.id || '') !== rowOptId; });
+          }
+          _updateSrBadges();
+          _updateScribeQueuePill();
           receipt('Speed Racer queue request could not reach Anchor.', true);
         });
       return;
@@ -8029,14 +8695,18 @@
         return;
       }
     }
-    if (e.key !== 'Enter' || e.shiftKey) return;
     var t = e.target;
     if (!t || !t.id) return;
     if (t.id === 'caveDlgStewardDirectionsInput') {
-      e.preventDefault();
-      var actBtn = document.getElementById('btnCaveDlgSendStewardAction');
-      if (actBtn && !actBtn.disabled) actBtn.click();
-    } else if (t.id === 'caveSrFeedbackInput') {
+      if ((e.key === 'Enter' || e.keyCode === 13) && (!e.shiftKey || e.ctrlKey || e.metaKey) && !e.isComposing && e.keyCode !== 229 && !t._composing) {
+        e.preventDefault();
+        var actBtn = document.getElementById('btnCaveDlgSendStewardAction');
+        if (actBtn && !actBtn.disabled) actBtn.click();
+      }
+      return;
+    }
+    if (e.key !== 'Enter' || e.shiftKey) return;
+    if (t.id === 'caveSrFeedbackInput') {
       e.preventDefault();
       var srRefBtn = document.getElementById('btnCaveSrApplyFeedback');
       if (srRefBtn && !srRefBtn.disabled) srRefBtn.click();
@@ -9510,9 +10180,24 @@
   });
 
   // Initialize source filters & hydrate local preloaded email cache immediately (0ms) on startup
+  try {
+    var _bootCommsQs = new URLSearchParams(location.search);
+    if (_bootCommsQs.get('comms_open') === '1' || _bootCommsQs.get('mail_open') === '1') {
+      var _calBootEl = document.getElementById('cal');
+      if (_calBootEl && !_calBootEl.classList.contains('open')) {
+        _calBootEl.classList.add('open');
+        var _togBootEl = document.getElementById('calTog');
+        if (_togBootEl) _togBootEl.textContent = 'Collapse';
+      }
+      if (_bootCommsQs.get('mail_open') === '1') {
+        applyCommsLayout('mail');
+      }
+    }
+  } catch (_bErr) {}
   if (_caveCommsData && _caveCommsData.ok) {
     _hydrateMailCardsFromCommsData(_caveCommsData);
   }
+  _updateScribeQueuePill();
   _applySourceFilterToDOM();
   try {
     var _initQs = new URLSearchParams(location.search);
@@ -9562,6 +10247,7 @@
   }
   setInterval(function () {
     if (document.hidden || _typingInCommsUi() || window._caveEmailActionInFlight > 0) return;
+    var pollSeqAtStart = window._triageMutationSeq || 0;
     fetch('/api/steward/comms?slim=1', {
       method: 'GET',
       headers: headers(),
@@ -9570,6 +10256,12 @@
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.ok) {
+          if (d.scribe_queue_counts) _updateScribeQueuePill(d.scribe_queue_counts);
+          if ((window._triageMutationSeq || 0) !== pollSeqAtStart) {
+            // A user triage or Send-to-Scribe occurred while this 60s poll was in flight — do not re-hydrate or cycle the reading pane!
+            if (d.speed_racer) _syncSpeedRacerFromServer(d.speed_racer);
+            return;
+          }
           _mergePreloadedEmailBodies(_caveCommsData, d);
           _caveCommsData = d;
           _hydrateMailCardsFromCommsData(d);

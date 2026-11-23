@@ -3966,6 +3966,8 @@ def _read_deliverables(campaign_dir: str):
                     else m_run.group(2).strip()
                 cell = (where_text[:m_run.start()]
                         + where_text[m_run.end():]).strip()
+            cell_for_bt = re.sub(r"\breview:\s*`[^`]+`", " ", cell)
+            bt_all = [m.strip() for m in re.findall(r"`([^`]+)`", cell_for_bt) if m and m.strip()]
             m_bt = re.search(r"`([^`]+)`", cell)
             # (2026-09-04) a register row written without backticks (the
             # Fractal Orthogonal Basis effort: "report/DRAFT-v1.md") must still
@@ -3983,6 +3985,7 @@ def _read_deliverables(campaign_dir: str):
                         if "/" in tok or "." in tok:
                             cand_plain = tok
                             break
+            companion_paths: list[str] = []
             if m_bt or cand_plain:
                 cand = (m_bt.group(1).strip() if m_bt else cand_plain)
                 if cand.startswith("/"):
@@ -3996,9 +3999,18 @@ def _read_deliverables(campaign_dir: str):
                     openable = route is not None
                 else:
                     path_rel, openable = _resolve_fuzzy_final_path(campaign_dir, cdir_real, cand)
+            if len(bt_all) > 1:
+                for extra_bt in bt_all[1:]:
+                    if extra_bt.startswith("/"):
+                        continue
+                    cp_rel, _cp_op = _resolve_fuzzy_final_path(campaign_dir, cdir_real, extra_bt)
+                    cp_clean = (cp_rel or extra_bt).replace("\\", "/").strip()
+                    if cp_clean and not cp_clean.startswith(("..", "/")) and cp_clean != path_rel and cp_clean not in companion_paths:
+                        companion_paths.append(cp_clean)
             items.append({"what": re.sub(r"\*\*", "", what),
                           "where_text": where_text,
                           "path": path_rel,
+                          "companion_paths": companion_paths,
                           "route": route,
                           "run": run_cmd,
                           "date": date,
@@ -4971,6 +4983,14 @@ def sync_steward_projections(campaign_dir: str, reason: str = "") -> dict:
         return {"ok": False, "changed": False}
     if any(isinstance(e, dict) and e.get("kind") == "refinement_update" for e in (roadmap.get("roadmap_events") or [])):
         return {"ok": True, "changed": False, "managed": True}
+    if roadmap.get("roadmap_events"):
+        # Append-only evented roadmaps (e.g. Campaign) obey the Ecgberht single-writer spine law:
+        # never mutate roadmap_projection in place without spine events (prevents roadmap_silent_rewrite).
+        try:
+            rec_res = reconcile_plan_under_lock(campaign_dir, roadmap=roadmap, reason=reason)
+            return {"ok": True, "changed": bool(rec_res.get("changed")), "managed": True}
+        except Exception:
+            return {"ok": True, "changed": False, "managed": True}
     roadmap = dict(roadmap)
     proj = [deepcopy(s) for s in (roadmap.get("roadmap_projection") or roadmap.get("steps") or []) if isinstance(s, dict)]
     roadmap["roadmap_projection"] = proj

@@ -426,6 +426,11 @@ ROUTES = [
     _r("POST", "/api/provider-setup/cancel", AUTH_TOKEN, handler="handle_provider_setup_post", migrated=True),
     _r("POST", "/api/provider-setup/api-key", AUTH_TOKEN, handler="handle_provider_setup_post", migrated=True),
 
+    # ── Wave 3: Crash-durable unified composer drafts (/api/steward/drafts) ──
+    _r("GET", "/api/steward/drafts", AUTH_TOKEN, handler="handle_steward_drafts_get", migrated=True),
+    _r("POST", "/api/steward/drafts", AUTH_TOKEN, handler="handle_steward_drafts_post", migrated=True),
+    _r("DELETE", "/api/steward/drafts", AUTH_TOKEN, handler="handle_steward_drafts_delete", migrated=True),
+
     # ── doctor V3 W3 — the /doctor page + background diagnostics ──────────
     # The page itself is an open bootstrap (same posture as "/" — browser
     # navigation must load before any token is presented; every mutating /

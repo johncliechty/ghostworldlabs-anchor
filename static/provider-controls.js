@@ -15,7 +15,14 @@
     const response = await fetch(path, {method:body ? 'POST' : 'GET',credentials:'same-origin',cache:'no-store',
       headers:hdrs,body:body ? JSON.stringify(body) : undefined});
     const data = await response.json();
-    if (!response.ok || !data.ok) throw new Error(data.error || 'Host provider settings are unavailable');
+    if (!response.ok || !data.ok) {
+      const err = new Error(data.error || data.message || 'Host provider settings are unavailable');
+      err.status = response.status;
+      err.status_kind = data.status_kind || null;
+      err.badge = data.badge || null;
+      err.unknown_state = Boolean(data.unknown_state);
+      throw err;
+    }
     return data;
   };
   function option(select, value, text, disabled) {
@@ -31,14 +38,13 @@
     return allowance.state+' · '+allowance.windows.map(w=>w.label+': '+Math.round(w.remaining_percent*10)/10+'% remaining'+(w.resets_at ? ' · resets '+new Date(w.resets_at*1000).toLocaleString() : ' · reset Not reported')).join(' · ');
   }
   function displayModelLabel(family, modelId) {
-    if (family === 'claude' && modelId === 'best') return 'claude-fable-5-1 (best · Fable 5.1)';
+    if (family === 'claude' && modelId === 'claude-fable-5-2') return 'claude-fable-5-2 (Fable 5.2)';
     return modelId;
   }
   function frontierName(account) {
     const sel = account && account.catalog && account.catalog.selection;
     if (!sel || !sel.model) return null;
-    const base = sel.model === 'best' ? 'claude-fable-5-1 (best)' : sel.model;
-    return sel.effort ? base + ' · ' + sel.effort : base;
+    return sel.effort ? sel.model + ' · ' + sel.effort : sel.model;
   }
   function quality(selects, account, choice) {
     const model=selects.model, effort=selects.effort;
@@ -173,7 +179,7 @@
       row.className='cave-account-summary'+(isSelected?' is-selected':'')+(isReady?' is-ready':'')+(isFallback?' is-fallback':'');
       row.dataset.accountId=connection.id;
       row.dataset.providerFamily=connection.family;
-      const defaultFrontierMap = {claude:'claude-fable-5-1 · max',chatgpt:'gpt-6-luna · ultra',gemini:'gemini-4-neon · high',grok:'grok-4.7 · xhigh'};
+      const defaultFrontierMap = {claude:'claude-fable-5-2 · max',chatgpt:'gpt-6-luna · ultra',gemini:'gemini-4-neon · high',grok:'grok-4.7 · xhigh'};
       const fModel=frontierName(connection) || svc.active_model || (isDefaultSub && mon.frontier_model) || defaultFrontierMap[connection.family] || null;
       const qChoice=data.preferences.quality[connection.family];
       const prefModel=qChoice && qChoice.model;
@@ -230,9 +236,9 @@
         : (isDefaultSub && mon.primary_reset_text)
           ? (' · resets ' + shortDate(mon.primary_reset_text))
           : (spend7Text ? (' · 7d ' + spend7Text) : '');
-      const cleanPref = prefModel === 'best' ? 'claude-fable-5-1' : prefModel;
+      const cleanPref = prefModel === 'best' ? 'claude-fable-5-2' : prefModel;
       const modelTxt = isFallback
-        ? 'Opus 5.5 · high (sign in CLI → Fable 5.1)'
+        ? 'Opus 5.5 · high (sign in CLI → Fable 5.2)'
         : ((!cleanPref || cleanPref==='latest_supported')
             ? (fModel || 'Current frontier')
             : (cleanPref + (qChoice && qChoice.effort && qChoice.effort !== 'highest_supported' ? ' · ' + qChoice.effort : '') + (fModel && fModel.indexOf(cleanPref) === -1 ? ' ('+fModel+')' : '')));

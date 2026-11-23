@@ -369,6 +369,7 @@ steward_cockpit/static/v1.html
 steward_cockpit/static/v3.html
 steward_cockpit/static/report.html
 steward_cockpit/static/anvil.html
+steward_cockpit/static/anvil.js
 steward_cockpit/static/aegis.html
 steward_cockpit/static/poincare.html
 steward_cockpit/static/wave17-aegis-cockpit-mockup.html

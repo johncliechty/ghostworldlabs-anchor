@@ -1,9 +1,9 @@
 {
   "schema": "anchor.mothership.registry.v1",
-  "latest_version": "1.5.3",
+  "latest_version": "1.5.4",
   "canonical_github_repo": "https://github.com/johncliechty/ghostworldlabs-anchor.git",
   "fallback_github_repo": "https://github.com/johncliechty/anchor-plus-skills.git",
-  "updated_at": "2026-11-20T18:30:00Z",
+  "updated_at": "2026-11-22T18:00:00Z",
   "motherships": [
     {
       "id": "gwl-server-lead",
@@ -15,9 +15,9 @@
       "github_repo": "https://github.com/johncliechty/ghostworldlabs-anchor.git",
       "platform": "windows",
       "install_dir": "C:/dev/Anchor",
-      "installed_version": "1.5.3",
-      "last_seen_at": "2026-11-20T18:30:00Z",
-      "last_push_at": "2026-11-20T18:30:00Z",
+      "installed_version": "1.5.4",
+      "last_seen_at": "2026-11-22T18:00:00Z",
+      "last_push_at": "2026-11-22T18:00:00Z",
       "pending_update": null
     },
     {
@@ -32,12 +32,12 @@
       "install_dir": "C:/dev/Anchor",
       "installed_version": "1.5.1",
       "last_seen_at": "2026-11-15T06:05:00Z",
-      "last_push_at": "2026-11-20T18:30:00Z",
+      "last_push_at": "2026-11-22T18:00:00Z",
       "pending_update": {
-        "target_version": "1.5.3",
+        "target_version": "1.5.4",
         "pushed_by": "gwl-server-lead",
-        "pushed_at": "2026-11-20T18:30:00Z",
-        "notes": "v1.5.3: Fast deliverable streaming (HTTP Range + ETag/304 + gzip), cached /api/skills (<10ms), standard Setup Homebase Registration for push updates, and automatic sanitized journal/error sync to Anchor Homebase."
+        "pushed_at": "2026-11-22T18:00:00Z",
+        "notes": "v1.5.4: Eliminate Windows [WinError 206] steward spawn overflow, cross-tailnet Homebase outbound update heartbeats, self-bootstrapping v1.5.1 updater, same-day email thread UTC/local fix + full thread_messages & cached Graph attachments, and deliverable-link 404 fixes."
       }
     }
   ]
