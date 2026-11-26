@@ -2923,9 +2923,9 @@ def render_project_tile_html(entry: dict, facts=None, chrome: bool = True) -> st
                 f'<button type="button" class="mini cave-lc-btn restore" data-cockpit-lifecycle="restore" data-pid="{pid}" data-label="{name}" title="Reactivate this AI Cockpit">Reactivate</button>'
                 f'</span>'
             )
-    drag_attr = 'draggable="true" ' if chrome else ''
+    drag_attr = 'draggable="true" ' if (chrome or is_active) else ''
     grip = ('<span class="rnd-grip" aria-hidden="true" '
-            'title="Drag into a folder">&#8942;&#8942;</span>') if chrome else ''
+            'title="Drag into a folder">&#8942;&#8942;</span>') if (chrome or is_active) else ''
     return (
         f'<div class="rnd-row" data-project-id="{pid}" data-notes="{notes_attr}" '
         f'data-blurb="{blurb_attr}" data-group="{group_attr}" '
@@ -7957,26 +7957,42 @@ def handle_high_seat_projects(handler, path, body):
         everything = list(_rnd.list_projects(include_archived=True, include_future=True, include_retired=True))
     except Exception:
         everything = []
-    entries = [e for e in everything if str(e.get("state") or "active") not in ("archived", "future", "retired")]
-    inactive = [e for e in everything if str(e.get("state") or "active") in ("archived", "retired")]
+    entries = [ent for ent in everything if str(ent.get("state") or "active") not in ("archived", "future", "retired")]
+    inactive = [ent for ent in everything if str(ent.get("state") or "active") in ("archived", "retired")]
     groups = {}
-    for e in sorted(entries, key=lambda x: (int(x.get("priority") or 2), str(x.get("name") or "").lower())):
-        groups.setdefault(str(e.get("group") or "").strip() or "Ungrouped", []).append(e)
+    for ent in sorted(entries, key=lambda x: (int(x.get("priority") or 2), str(x.get("name") or "").lower())):
+        groups.setdefault(str(ent.get("group") or "").strip() or "Ungrouped", []).append(ent)
     facts = {f["id"]: f for f in _hr.all_project_facts(entries, datetime.now().date())}
     handler._send_json({"ok": True, "html": _high_seat_projects_html(groups, facts, inactive=inactive)})
 
 
+def handle_high_seat_processing(handler, path, body):
+    """GET /api/high-seat/processing (token) — pure stat-memoized feed for Cave [N Processing] drawer."""
+    import cave_processing_feed as _cpf
+    payload, code = _cpf.handle_processing_http_get(path, headers=handler.headers)
+    handler._send_json(payload, code)
+
+
 def _high_seat_projects_html(groups, facts, inactive=None):
-    """The Projects tile's body on the High Seat: the OLD dashboard's project list — its folders and its rows, the one
-    renderer (`_render_group_folders` → `render_project_tile_html`), every folder closed (John, 2026-09-27: "the same
-    look and feel, and all of the folders closed"). Rendered without the chrome that needs the old page's script (the
-    kebab menu, the cost rollup, the boneyard button, the drag) — the renderer's own argument, not a clip after the
-    fact (Grok R8b). Never raises: a throw becomes one sentence in the tile."""
+    """The Projects tile's body on the High Seat: collapsible folders + thin project rows,
+    every folder closed by default, with `+ New folder` toolbar, drag-into-folder support,
+    and the non-destructive Archived & Retired drawer below."""
     try:
-        active_html = _render_group_folders(groups, facts=facts, chrome=False)
+        toolbar_html = (
+            '<div class="rnd-folder-toolbar cave-ptile-toolbar">'
+            '<button class="rnd-newfolder-btn" type="button" data-open-folder-wizard="folder" '
+            'onclick="window.rndNewFolder && window.rndNewFolder()" title="Guided GUI to create a folder and organize projects">'
+            '&#128193; + Add Folder</button>'
+            '<button class="rnd-newfolder-btn cave-newproj-btn" type="button" data-open-folder-wizard="project" '
+            'title="Guided GUI to create or link a project into a folder">'
+            '&#65291; Add Project to Folder</button>'
+            '<span class="rnd-folder-hint">Click any folder below to open its projects, or drag a project row (&#8942;&#8942;) onto a folder header to move it.</span>'
+            '</div>'
+        )
+        active_html = toolbar_html + _render_group_folders(groups, facts=facts, chrome=False)
         inact_list = sorted(list(inactive or ()), key=lambda x: str(x.get("name") or "").lower())
         if inact_list:
-            rows = "".join(_render_project_row_html(e, facts={}, chrome=False) for e in inact_list)
+            rows = "".join(render_project_tile_html(e, facts={}, chrome=False) for e in inact_list)
             active_html += (
                 f'<details class="ptile-archived" id="ptileArchived">'
                 f'<summary>Archived &amp; Retired AI Cockpits &middot; <b>{len(inact_list)}</b> '
@@ -22208,6 +22224,7 @@ _MIGRATED_HANDLERS = {
     "handle_desk": handle_desk,
     "handle_debug_threads": handle_debug_threads,
     "handle_high_seat_projects": handle_high_seat_projects,
+    "handle_high_seat_processing": handle_high_seat_processing,
     "handle_cave_terminals": handle_cave_terminals,
     "handle_version": handle_version,
     "handle_status": handle_status,
@@ -22572,13 +22589,22 @@ class AnchorHandler(BaseHTTPRequestHandler):
                         _ents = []
                     obj, code = _mc.handle_collab_get(entries=_ents)
                 else:
-                    proot = self._steward_pid_dir(_qpid)
-                    if proot is None and verb in ("spellcheck", "dictate", "drafts", "fleet-brief", "fleet-relay", "anvil", "anvil/walkthrough", "mothership-files"):
+                    _is_anvil_verb = verb == "anvil" or verb.startswith("anvil/")
+                    proot = self._steward_pid_dir(_qpid) if (not _is_anvil_verb or _qpid.strip()) else None
+                    if proot is None and _is_anvil_verb:
+                        self._send_json(
+                            {
+                                "ok": False,
+                                "error_code": "UNKNOWN_PROJECT_ID",
+                                "error": "Unknown project id",
+                                "message": "Unknown project id",
+                            },
+                            code=404,
+                        )
+                        return
+                    if proot is None and verb in ("spellcheck", "dictate", "drafts", "fleet-brief", "fleet-relay", "mothership-files"):
                         _rdir = globals().get("ROOT_DIR") or ANCHOR_DIR
-                        if verb in ("anvil", "anvil/walkthrough") and os.path.isdir(str(_rdir.parent / "Hierarchical Normalizing Flows" / "Paper 1")):
-                            proot = str(_rdir.parent / "Hierarchical Normalizing Flows" / "Paper 1")
-                        else:
-                            proot = str(_rdir.parent / "Campaign") if os.path.isdir(str(_rdir.parent / "Campaign")) else str(_rdir)
+                        proot = str(_rdir.parent / "Campaign") if os.path.isdir(str(_rdir.parent / "Campaign")) else str(_rdir)
                     if proot is None:
                         self._send_json({"error": "unknown project"}, code=404); return
                     obj, code = _scr.api_get(proot, verb, qs)
@@ -22612,13 +22638,22 @@ class AnchorHandler(BaseHTTPRequestHandler):
                         _ents = []
                     obj, code = _mc.handle_collab_post(body or {}, entries=_ents)
                 else:
-                    proot = self._steward_pid_dir(pid)
-                    if proot is None and verb in ("spellcheck", "dictate", "drafts", "fleet-brief", "fleet-relay", "anvil", "anvil/walkthrough", "mothership-files"):
+                    _is_anvil_verb = verb == "anvil" or verb.startswith("anvil/")
+                    proot = self._steward_pid_dir(pid) if (not _is_anvil_verb or str(pid or "").strip()) else None
+                    if proot is None and _is_anvil_verb:
+                        self._send_json(
+                            {
+                                "ok": False,
+                                "error_code": "UNKNOWN_PROJECT_ID",
+                                "error": "Unknown project id",
+                                "message": "Unknown project id",
+                            },
+                            code=404,
+                        )
+                        return
+                    if proot is None and verb in ("spellcheck", "dictate", "drafts", "fleet-brief", "fleet-relay", "mothership-files"):
                         _rdir = globals().get("ROOT_DIR") or ANCHOR_DIR
-                        if verb in ("anvil", "anvil/walkthrough") and os.path.isdir(str(_rdir.parent / "Hierarchical Normalizing Flows" / "Paper 1")):
-                            proot = str(_rdir.parent / "Hierarchical Normalizing Flows" / "Paper 1")
-                        else:
-                            proot = str(_rdir.parent / "Campaign") if os.path.isdir(str(_rdir.parent / "Campaign")) else str(_rdir)
+                        proot = str(_rdir.parent / "Campaign") if os.path.isdir(str(_rdir.parent / "Campaign")) else str(_rdir)
                     if proot is None:
                         self._send_json({"ok": False, "error": "unknown project"}, code=404); return
                     obj, code = _scr.api_post(proot, verb, body or {})
@@ -23709,7 +23744,7 @@ class AnchorHandler(BaseHTTPRequestHandler):
                 return
             if _path_only.startswith("/api/steward/") or urlparse(self.path).path == "/api/anvil/walkthrough":
                 _verb_get = "anvil/walkthrough" if urlparse(self.path).path == "/api/anvil/walkthrough" else _path_only[len("/api/steward/"):]
-                if not (self._term_token_ok() or (_verb_get in ("dictate", "anvil", "anvil/walkthrough", "mothership-files") and _local_browser(self))):
+                if not (self._term_token_ok() or ((_verb_get in ("dictate", "anvil", "anvil/walkthrough", "mothership-files") or _verb_get.startswith("anvil/")) and _local_browser(self))):
                     print("  [%s] REFUSED GET %s %s" % (datetime.now().strftime("%H:%M:%S"), _path_only, self._auth_shape()))      # 2026-10-01: a refusal is visible in the log
                     self._send_json({"error": "unauthorized"}, code=401); return
                 self._steward_api("GET", _verb_get)
@@ -23810,6 +23845,16 @@ class AnchorHandler(BaseHTTPRequestHandler):
                 q = parse_qs(urlparse(self.path).query)
                 is_sb = str((q.get("sandbox") or [""])[0]).strip().lower() in ("1", "true", "yes")
                 self._send_json(_gag.get_gwl_admin_state(sandbox=is_sb), 200)
+            elif _path_only == "/api/website/license":
+                import website_portal as _wp
+                self._send_json(
+                    {
+                        "ok": True,
+                        "license": _wp.get_non_resale_license_spec(),
+                        "status": _wp.get_local_license_status(),
+                    },
+                    200,
+                )
             elif _path_only == "/api/system/version":
                 import mothership_updater as _mu
                 self._send_json(_mu.get_version_status(), 200)
@@ -23817,7 +23862,8 @@ class AnchorHandler(BaseHTTPRequestHandler):
                 import mothership_updater as _mu
                 q = parse_qs(urlparse(self.path).query)
                 rem_url = str((q.get("remote_url") or [""])[0]).strip() or None
-                self._send_json(_mu.check_for_updates(remote_url=rem_url), 200)
+                chk_web = ("PYTEST_CURRENT_TEST" not in os.environ) or bool(rem_url)
+                self._send_json(_mu.check_for_updates(remote_url=rem_url, check_website=chk_web), 200)
             elif _path_only == "/api/mothership/registry":
                 import mothership_updater as _mu
                 self._send_json(_mu.load_mothership_registry(), 200)
@@ -24574,7 +24620,7 @@ class AnchorHandler(BaseHTTPRequestHandler):
             _out = _gag.dispatch_gwl_admin_action(_act, _b, sandbox=is_sb)
             self._send_json(_out, 200 if _out.get("ok") else 400)
             return
-        if _path_only in ("/api/system/pull_update", "/api/mothership/register", "/api/mothership/push_update"):
+        if _path_only in ("/api/system/pull_update", "/api/system/update_preferences", "/api/mothership/register", "/api/mothership/push_update"):
             import mothership_updater as _mu
             _node_cap_ok = (
                 _path_only == "/api/system/pull_update"
@@ -24588,6 +24634,12 @@ class AnchorHandler(BaseHTTPRequestHandler):
                 _out = _mu.pull_latest_update(
                     target_version=str(_b.get("target_version") or "").strip() or None,
                     sync_skills=bool(_b.get("sync_skills", True)),
+                )
+            elif _path_only == "/api/system/update_preferences":
+                _out = _mu.configure_update_and_hardware_preferences(
+                    auto_pull_updates=_b.get("auto_pull_updates"),
+                    low_spec_mode=_b.get("low_spec_mode"),
+                    release_watch_url=_b.get("release_watch_url"),
                 )
             elif _path_only == "/api/mothership/register":
                 _out = _mu.register_mothership_in_repo(_b)
@@ -24941,7 +24993,7 @@ def main():
     except Exception:
         pass
     port = 8777
-    no_browser = "--no-browser" in sys.argv
+    no_browser = ("--no-browser" in sys.argv) or (not _paths.is_interactive_desktop_session())
     if "--port" in sys.argv:
         idx = sys.argv.index("--port")
         if idx + 1 < len(sys.argv):

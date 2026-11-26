@@ -31,7 +31,7 @@ import importlib
 from pathlib import Path
 
 _HOT_MOD_MTIMES = globals().get("_HOT_MOD_MTIMES") if isinstance(globals().get("_HOT_MOD_MTIMES"), dict) else {}
-for _hot_mod in ("paths", "office_preview", "anchor_settings", "model_policy", "provider_setup", "gwl_admin_gui", "onboard_wizard", "usage_allowance_monitor", "usage_nightly_sync", "deliverables_register", "steward_cockpit.steward_core", "tools.steward_plan", "steward_cockpit.spellcheck_engine", "steward_cockpit.dictation_engine", "steward_cockpit.steward_campaign", "steward_cockpit.campaign_acts", "steward_cockpit.campaign_say", "steward_cockpit.anvil_session", "high_seat_page", "report_viewer", "scribe_engine", "comms_connector"):
+for _hot_mod in ("paths", "office_preview", "anchor_settings", "model_policy", "provider_setup", "gwl_admin_gui", "onboard_wizard", "usage_allowance_monitor", "usage_nightly_sync", "deliverables_register", "steward_cockpit.steward_core", "tools.steward_plan", "steward_cockpit.wave_map_model", "steward_cockpit.deliverable_shelves", "steward_cockpit.spellcheck_engine", "steward_cockpit.dictation_engine", "steward_cockpit.steward_campaign", "steward_cockpit.campaign_acts", "steward_cockpit.campaign_say", "steward_cockpit.anvil_session", "steward_cockpit.anvil_scoping_v6", "steward_cockpit.anvil_py_deps", "steward_cockpit.anvil_replication_job", "steward_cockpit.anvil_verification_guard", "steward_cockpit.anvil_comprehension_engine", "steward_cockpit.anvil_literature_job", "high_seat_page", "report_viewer", "scribe_engine", "comms_connector"):
     if _hot_mod in sys.modules:
         try:
             _m_obj = sys.modules[_hot_mod]
@@ -402,6 +402,19 @@ def serve_static(name):
     ctype = ("text/html; charset=utf-8" if name.endswith(".html")
              else "text/css; charset=utf-8" if name.endswith(".css")
              else "application/javascript; charset=utf-8")
+    if name == "anvil.html":
+        html_txt = f.read_text(encoding="utf-8")
+        def _stamp_static_html(m):
+            attr_and_url = m.group(1)
+            asset_rel = m.group(2)
+            ver = _static_asset_version(asset_rel)
+            return f'{attr_and_url}?v={ver}"'
+        html_txt = re.sub(
+            r'((?:href|src)="(?:/steward-static/|/static/)([^"?]+\.(?:js|css)))(?:\?v=[^"]*)?"',
+            _stamp_static_html,
+            html_txt,
+        )
+        return html_txt.encode("utf-8"), ctype
     return f.read_bytes(), ctype
 
 
@@ -850,7 +863,9 @@ _PROJECT_VERBS = {"efforts", "grass", "boneyard", "skills", "gandalf",
 # was full (2026-08-28).
 _PROJECT_FILE_VERBS = {"files", "filetext", "upload", "open", "notebook-open",
                        "notebook-register", "notebook-status", "deliverable-file", "anvil",
-                       "anvil/walkthrough", "anvil/source", "anvil/v4_state", "spellcheck", "dictate", "drafts", "fleet-brief", "fleet-relay"}
+                       "anvil/walkthrough", "anvil/source", "anvil/v4_state", "anvil/analyses", "anvil/discover",
+                       "anvil/scoping", "anvil/replication",
+                       "spellcheck", "dictate", "drafts", "fleet-brief", "fleet-relay"}
 
 
 # ── Wave 3: Crash-Durable Unified Composer Drafts (/api/steward/drafts) ──────
@@ -1537,6 +1552,110 @@ def _resolve_plan_cdir(proot, rel):
     return None
 
 
+def _resolve_anvil_route_cdir(proot, rel):
+    """Resolve and containment-check `dir` for Anvil routes, or discover child effort when `dir` is omitted."""
+    from steward_cockpit import anvil_session as _as_dir
+
+    base = Path(str(proot or "")).resolve()
+    raw_rel = str(rel or "").strip()
+    if not raw_rel:
+        if hasattr(_as_dir, "resolve_cockpit_or_child_effort"):
+            return str(_as_dir.resolve_cockpit_or_child_effort(base)), None
+        return str(base), None
+
+    if (
+        "\x00" in raw_rel
+        or ".." in raw_rel.replace("\\", "/").split("/")
+        or ".." in Path(raw_rel).parts
+        or raw_rel.startswith(("/", "\\"))
+        or ":" in raw_rel
+        or Path(raw_rel).is_absolute()
+    ):
+        msg = "Malformed Anvil request or invalid engine output"
+        return None, (
+            {
+                "ok": False,
+                "error_code": "PATH_ESCAPE_REFUSED",
+                "status_kind": "dependency-returns-garbage",
+                "failure_state": "dependency-returns-garbage",
+                "http_status": 403,
+                "state": "REJECTED_GARBAGE",
+                "badge": "REJECTED_GARBAGE",
+                "unknown_state": False,
+                "error": msg,
+                "message": msg,
+            },
+            403,
+        )
+
+    walk = base
+    for part in [p for p in re.split(r"[\\/]+", raw_rel) if p and p != "."]:
+        low = part.lower()
+        if low in _as_dir.FORBIDDEN_DOT_PARTS or low in _as_dir.FORBIDDEN_SECRET_NAMES or part.startswith("."):
+            msg = "Malformed Anvil request or invalid engine output"
+            return None, (
+                {
+                    "ok": False,
+                    "error_code": "PATH_ESCAPE_REFUSED",
+                    "status_kind": "dependency-returns-garbage",
+                    "failure_state": "dependency-returns-garbage",
+                    "http_status": 403,
+                    "state": "REJECTED_GARBAGE",
+                    "badge": "REJECTED_GARBAGE",
+                    "unknown_state": False,
+                    "error": msg,
+                    "message": msg,
+                },
+                403,
+            )
+        walk = walk / part
+        if _as_dir._is_symlink_or_junction(walk):
+            msg = "Malformed Anvil request or invalid engine output"
+            return None, (
+                {
+                    "ok": False,
+                    "error_code": "PATH_ESCAPE_REFUSED",
+                    "status_kind": "dependency-returns-garbage",
+                    "failure_state": "dependency-returns-garbage",
+                    "http_status": 403,
+                    "state": "REJECTED_GARBAGE",
+                    "badge": "REJECTED_GARBAGE",
+                    "unknown_state": False,
+                    "error": msg,
+                    "message": msg,
+                },
+                403,
+            )
+
+    cand_resolved = walk.resolve()
+    if cand_resolved != base and base not in cand_resolved.parents:
+        msg = "Malformed Anvil request or invalid engine output"
+        return None, (
+            {
+                "ok": False,
+                "error_code": "PATH_ESCAPE_REFUSED",
+                "status_kind": "dependency-returns-garbage",
+                "failure_state": "dependency-returns-garbage",
+                "http_status": 403,
+                "state": "REJECTED_GARBAGE",
+                "badge": "REJECTED_GARBAGE",
+                "unknown_state": False,
+                "error": msg,
+                "message": msg,
+            },
+            403,
+        )
+
+    eff = _effort_dir(proot, raw_rel)
+    if eff and os.path.isdir(eff):
+        return str(Path(eff).resolve()), None
+    if cand_resolved.is_dir():
+        return str(cand_resolved), None
+    if base.name.lower() == raw_rel.lower():
+        return str(base), None
+    return None, ({"ok": False, "error_code": "UNKNOWN_EFFORT", "error": "unknown effort", "message": "Unknown effort"}, 404)
+
+
 def _registered_project_terminal(proot, raw_tid):
     tid = str(raw_tid or "")
     if not re.fullmatch(r"\d{1,6}", tid):
@@ -1589,7 +1708,13 @@ def api_get(proot, verb, qs):
         if cdir is None:
             return {"error": "unknown effort"}, 404
         return events(cdir, qs)
-    if verb in ("spellcheck", "dictate", "fleet-brief", "fleet-relay", "anvil", "anvil/walkthrough", "anvil/source", "anvil/v4_state", "mothership-files"):
+    if verb == "anvil" or verb.startswith("anvil/"):
+        rel_av = (qs.get("dir") or "").strip()
+        cdir_av, err_av = _resolve_anvil_route_cdir(proot, rel_av)
+        if err_av is not None:
+            return err_av
+        return handle_get(cdir_av, verb, qs)
+    if verb in ("spellcheck", "dictate", "fleet-brief", "fleet-relay", "mothership-files"):
         rel = (qs.get("dir") or "").strip()
         cdir = _effort_dir(proot, rel) or (_resolve_named_cockpit_dir(rel) if rel else None) or proot
         return handle_get(cdir, verb, qs)
@@ -1628,6 +1753,17 @@ def api_get(proot, verb, qs):
                 return {"error": "unknown effort"}, 404
             return handle_get(cdir, verb, qs)
         return handle_get(proot, verb, qs)
+    if verb in ("wave-state", "wave-map", "deliverable-batches"):
+        rel_w = (qs.get("dir") or "").strip()
+        if rel_w:
+            try:
+                paths.resolve_contained_path(proot, rel_w, allow_missing=True)
+            except paths.UnsafePathError:
+                return {"ok": False, "error": "path traversal refused"}, 403
+        cdir_w = _effort_dir(proot, rel_w)
+        if cdir_w is None:
+            return {"ok": False, "error": "unknown effort"}, 404
+        return handle_get(cdir_w, verb, qs)
     cdir = _effort_dir(proot, qs.get("dir", ""))
     if cdir is None:
         return {"error": "unknown effort"}, 404
@@ -1760,6 +1896,15 @@ def api_post(proot, verb, body):
         else:
             cdir_a = str(proot or "")
         return handle_post(cdir_a, verb, body)
+    if verb == "anvil" or verb.startswith("anvil/"):
+        if not isinstance(body, dict):
+            msg_g = "Malformed Anvil request or invalid engine output"
+            return {"ok": False, "error_code": "MALFORMED_DATA_REFUSED", "status_kind": "dependency-returns-garbage", "failure_state": "dependency-returns-garbage", "error": msg_g, "message": msg_g}, 400
+        rel_av = (body.get("dir") or "").strip()
+        cdir_av, err_av = _resolve_anvil_route_cdir(proot, rel_av)
+        if err_av is not None:
+            return err_av
+        return handle_post(cdir_av, verb, body)
     rel = (body.get("dir") or "").strip()
     if not rel and verb in _PROJECT_TERMINAL_VERBS:
         return handle_post(proot, verb, body)
@@ -1769,11 +1914,24 @@ def api_post(proot, verb, body):
         if body.get("refinement_context"):
             return {"ok": False, "error": "refinement belongs to its campaign"}, 400
         return handle_post(proot, verb, body)
-    if verb in ("spellcheck", "dictate", "fleet-brief", "fleet-relay", "anvil", "anvil/walkthrough", "mothership-files"):
+    if verb in ("spellcheck", "dictate", "fleet-brief", "fleet-relay", "mothership-files"):
         cdir = _effort_dir(proot, rel) or (_resolve_named_cockpit_dir(rel) if rel else None) or proot
         return handle_post(cdir, verb, body)
     if verb in _PROJECT_FILE_VERBS and not rel:
         return handle_post(proot, verb, body)
+    if verb in ("wave-state", "wave-map", "deliverable-batches"):
+        if not isinstance(body, dict):
+            return {"ok": False, "error": "JSON object required"}, 400
+        rel_w = str(body.get("dir") or "").strip()
+        if rel_w:
+            try:
+                paths.resolve_contained_path(proot, rel_w, allow_missing=True)
+            except paths.UnsafePathError:
+                return {"ok": False, "error": "path traversal refused"}, 403
+        cdir_w = _effort_dir(proot, rel_w)
+        if cdir_w is None:
+            return {"ok": False, "error": "unknown effort"}, 404
+        return handle_post(cdir_w, verb, body)
     cdir = _effort_dir(proot, body.get("dir", ""))
     if cdir is None:
         return {"ok": False, "error": "unknown effort"}, 404
@@ -1908,6 +2066,8 @@ def _efforts(cdir):
                     # prompt prefills it — user edits or replaces)
                     "suggested_name": campaign.suggest_effort_name(
                         m["goal_brief"]),
+                    "has_anvil": (Path(edir) / ".anvil" / "session.json").is_file()
+                                 or (Path(edir) / ".anvil" / "analyses" / "index.json").is_file(),
                     "light": eff_light,
                     "goal_brief": m["goal_brief"], "steps_done": m["steps_done"],
                     "steps_total": m["steps_total"],
@@ -3957,6 +4117,10 @@ def _resolve_clean_download_filename(cdir, rel, real, ext, qs):
 
 def handle_get(cdir, verb, qs):
     qs = qs or {}
+    if verb in ("wave-state", "wave-map"):
+        from steward_cockpit import wave_map_model as _wmm
+        w_res = _wmm.build_wave_map_payload(cdir)
+        return w_res, (500 if w_res.get("failure_state") == "backing-store-unreadable" else 200)
     if verb == "plan":
         if not cdir or not os.path.isdir(str(cdir)):
             return _plan_missing_response()
@@ -4026,6 +4190,17 @@ def handle_get(cdir, verb, qs):
                     for c in a.get("companions") or []:
                         if isinstance(c.get("item"), dict):
                             _attach_rt(c["item"])
+                shelves_obj = data.get("shelves") if isinstance(data.get("shelves"), dict) else {}
+                for sb in shelves_obj.get("most_recent_batches") or []:
+                    for sit in (sb.get("items") if isinstance(sb, dict) else None) or []:
+                        _attach_rt(sit)
+                        for fp in (sit.get("format_pills") if isinstance(sit, dict) else None) or []:
+                            _attach_rt(fp)
+                for scol in (shelves_obj.get("final") or [], shelves_obj.get("earlier") or []):
+                    for sit in scol:
+                        _attach_rt(sit)
+                        for fp in (sit.get("format_pills") if isinstance(sit, dict) else None) or []:
+                            _attach_rt(fp)
             except Exception:
                 pass   # the tile still builds its own link from the path
         res_deliv = _deliverables_cached(cdir, qs, lambda: campaign.read_deliverables(cdir), _build)
@@ -4454,7 +4629,9 @@ def handle_get(cdir, verb, qs):
         _map_lock = globals().setdefault("_MAP_ROUTE_LOCK", threading.Lock())
         _map_key_locks = globals().setdefault("_MAP_ROUTE_KEY_LOCKS", {})
         _norm_cdir = os.path.normcase(os.path.abspath(str(cdir)))
-        _mkey = (_norm_cdir, str(qs.get("pid", "")), str(qs.get("dir", "")))
+        _raw_ph = str(qs.get("plan_history", qs.get("include_plan_history", "1"))).strip().lower()
+        _want_plan_hist = _raw_ph not in ("0", "false", "no")
+        _mkey = (_norm_cdir, str(qs.get("pid", "")), str(qs.get("dir", "")), _want_plan_hist)
         if not _in_pytest:
             _cur_stamp = campaign.map_stamp(cdir)
             _now_mono = time.monotonic()
@@ -4466,6 +4643,77 @@ def handle_get(cdir, verb, qs):
         else:
             _klock = None
 
+        def _derive_recent_done_sentence(cdir_in, m_in) -> str:
+            def _clean_one_sentence(raw_txt: str, suffix: str = "") -> str:
+                s = str(raw_txt or "").replace("**", "").replace("`", "").strip()
+                s = re.sub(r"^[\-\*\u2022\d\.\)\s]+", "", s)
+                s = re.sub(r"\s+", " ", s).strip()
+                if not s:
+                    return ""
+                parts = re.split(r"(?<=[.!?])\s+", s)
+                head = parts[0].strip() if parts else s
+                if len(head) < 16 and len(parts) > 1:
+                    head = f"{head} {parts[1].strip()}".strip()
+                if len(head) > 185:
+                    head = head[:182].rstrip(" ,;:-") + "…"
+                if suffix:
+                    head = head.rstrip(".") + f" ({suffix})."
+                elif head and head[-1] not in ".!?…":
+                    head += "."
+                return head
+
+            wm = m_in.get("wave_map")
+            if isinstance(wm, dict):
+                rh = wm.get("recent_history")
+                if isinstance(rh, list) and rh:
+                    h0 = rh[0] if isinstance(rh[0], dict) else {}
+                    htxt = str(h0.get("text") or "").strip()
+                    hago = str(h0.get("ago") or "").strip()
+                    sfx = hago if (hago and hago.lower() not in ("done", "completed")) else ""
+                    sent = _clean_one_sentence(htxt, sfx)
+                    if sent:
+                        return sent
+
+            steps_list = m_in.get("steps")
+            if isinstance(steps_list, list):
+                for st_done in reversed(steps_list):
+                    if isinstance(st_done, dict) and (st_done.get("status") == "done" or st_done.get("done") is True):
+                        nm = str(st_done.get("name") or st_done.get("title") or "").strip()
+                        gl = str(st_done.get("goal") or "").strip()
+                        if nm:
+                            combo = f"Completed {nm}" + (f" — {gl}" if gl else "")
+                            sent = _clean_one_sentence(combo)
+                            if sent:
+                                return sent
+
+            try:
+                clog = Path(cdir_in) / ".ecgberht" / "conversation-log.json"
+                if clog.is_file():
+                    turns = (json.loads(clog.read_text(encoding="utf-8")) or {}).get("turns") or []
+                    for trn in reversed(turns):
+                        if not isinstance(trn, dict) or trn.get("role") != "steward":
+                            continue
+                        tid = str(trn.get("turn_id") or "")
+                        ttxt = str(trn.get("text") or "").strip()
+                        if not ttxt:
+                            continue
+                        if tid.startswith("receipt:"):
+                            m_lnk = re.search(r"\[([^\]]+)\]\(", ttxt)
+                            if m_lnk:
+                                return _clean_one_sentence(f"Delivered {m_lnk.group(1)}")
+                        else:
+                            sent = _clean_one_sentence(ttxt)
+                            if sent:
+                                return sent
+            except Exception:
+                pass
+
+            hb = m_in.get("heartbeat") if isinstance(m_in.get("heartbeat"), dict) else {}
+            ae = str(hb.get("active_effort") or "").strip()
+            if ae:
+                return _clean_one_sentence(ae)
+            return "No completed waves recorded yet — use the dialogue or left plan to kick off the first wave."
+
         def _build_map_resp():
             if not _in_pytest:
                 try:
@@ -4476,7 +4724,7 @@ def handle_get(cdir, verb, qs):
                         campaign.sync_steward_projections(cdir)
                 except Exception:
                     pass
-            m = dict(campaign.read_map(cdir, include_plan_history=True))
+            m = dict(campaign.read_map(cdir, include_plan_history=_want_plan_hist))
             # W0b (High Seat, 2026-09-26): a part that points at another record is resolved at read,
             # once per distinct target per request; a broken reference is named on the page, never blank.
             try:
@@ -4540,6 +4788,13 @@ def handle_get(cdir, verb, qs):
                 _err_body, _ = _plan_http_error(_pexc)
                 m["plan_state"] = _err_body
             m["full_cockpit_url"] = full_cockpit_url(str(qs.get("pid", "")), str(qs.get("dir", "")))
+            m["folder_path"] = str(Path(cdir).resolve())
+            try:
+                from steward_cockpit import wave_map_model as _wmm
+                m["wave_map"] = _wmm.build_wave_map_payload(cdir)
+            except Exception:
+                m["wave_map"] = None
+            m["recent_done_sentence"] = _derive_recent_done_sentence(cdir, m)
             m["stamp"] = campaign.map_stamp(cdir)
             m["steward"] = _persona_name()
             return m
@@ -4615,55 +4870,161 @@ def handle_get(cdir, verb, qs):
         return {"terms": _terms_view(cdir)}, 200
     if verb == "gandalf":
         return {"runs": _gandalf_runs(cdir)}, 200
-    if verb in ("anvil", "anvil/walkthrough", "anvil/source", "anvil/v4_state", "/api/steward/anvil", "/api/steward/anvil/walkthrough", "/api/steward/anvil/source", "/api/steward/anvil/v4_state"):
-        import importlib
+    if verb in (
+        "anvil",
+        "anvil/walkthrough",
+        "anvil/source",
+        "anvil/v4_state",
+        "anvil/analyses",
+        "anvil/discover",
+        "/api/steward/anvil",
+        "/api/steward/anvil/walkthrough",
+        "/api/steward/anvil/source",
+        "/api/steward/anvil/v4_state",
+        "/api/steward/anvil/analyses",
+        "/api/steward/anvil/discover",
+        "anvil/scoping",
+        "/api/steward/anvil/scoping",
+        "anvil/replication",
+        "/api/steward/anvil/replication",
+        "anvil/comprehension",
+        "/api/steward/anvil/comprehension",
+        "anvil/literature",
+        "/api/steward/anvil/literature",
+    ):
         from steward_cockpit import anvil_session as _as
-        try:
-            _as_mtime = Path(_as.__file__).stat().st_mtime_ns
-            if getattr(_as, "_LOADED_MTIME_NS", None) != _as_mtime:
-                _as = importlib.reload(_as)
-                _as._LOADED_MTIME_NS = _as_mtime
-        except Exception:
-            pass
-        norm_verb = verb[len("/api/steward/"):] if verb.startswith("/api/steward/") else verb
-        act_get = str(qs.get("action") or "").strip().lower()
-        if norm_verb == "anvil/v4_state" or act_get == "v4_state":
-            return _as.get_v4_cockpit_state(cdir)
-        if norm_verb == "anvil/source" or act_get == "source":
-            raw_file_q = qs.get("file") if qs.get("file") is not None else qs.get("path")
-            if isinstance(raw_file_q, list):
-                raw_file_q = raw_file_q[0] if raw_file_q else ""
-            rel_file = str(raw_file_q or "").strip()
+        from steward_cockpit import anvil_scoping_v6 as _as6
+        from steward_cockpit import anvil_py_deps as _apd
+        from steward_cockpit import anvil_replication_job as _arj
+        from steward_cockpit import anvil_verification_guard as _avg
+        from steward_cockpit import anvil_comprehension_engine as _ace
+        from steward_cockpit import anvil_literature_job as _alj
+        for _m_ref in (_as, _as6, _apd, _arj, _avg, _ace, _alj):
             try:
-                src_out = _as.get_cockpit_file_source(cdir, rel_file)
+                _mt = Path(_m_ref.__file__).stat().st_mtime_ns
+                if getattr(_m_ref, "_LOADED_MTIME_NS", None) != _mt:
+                    importlib.reload(_m_ref)
+                    _m_ref._LOADED_MTIME_NS = _mt
+            except Exception:
+                pass
+        norm_verb = verb[len("/api/steward/"):] if verb.startswith("/api/steward/") else verb
+        raw_act_q = qs.get("action")
+        if isinstance(raw_act_q, list):
+            raw_act_q = raw_act_q[0] if raw_act_q else ""
+        act_get = str(raw_act_q or "").strip().lower()
+        raw_aid_q = qs.get("analysis_id")
+        if isinstance(raw_aid_q, list):
+            raw_aid_q = raw_aid_q[0] if raw_aid_q else None
+        aid_get = raw_aid_q if raw_aid_q is not None else None
+        raw_disc_q = qs.get("discover")
+        if isinstance(raw_disc_q, list):
+            raw_disc_q = raw_disc_q[0] if raw_disc_q else ""
+        raw_an_q = qs.get("analyses")
+        if isinstance(raw_an_q, list):
+            raw_an_q = raw_an_q[0] if raw_an_q else ""
+
+        try:
+            if norm_verb == "anvil/discover" or act_get in ("discover", "discover_candidates") or str(raw_disc_q or "").strip().lower() in ("1", "true", "yes"):
+                return _as.discover_cockpit_candidates_http(cdir)
+            if norm_verb == "anvil/scoping" or act_get in ("scoping", "scoping_state", "scoping_v2"):
+                raw_sw_q = qs.get("software_spec") if qs.get("software_spec") is not None else qs.get("software_target")
+                if isinstance(raw_sw_q, list):
+                    raw_sw_q = raw_sw_q[0] if raw_sw_q else None
+                raw_pp_q = qs.get("paper_spec") if qs.get("paper_spec") is not None else qs.get("paper_target")
+                if isinstance(raw_pp_q, list):
+                    raw_pp_q = raw_pp_q[0] if raw_pp_q else None
+                raw_mids_q = qs.get("module_ids")
+                if isinstance(raw_mids_q, list):
+                    raw_mids_q = raw_mids_q[0] if raw_mids_q else None
+                parsed_mids = None
+                if raw_mids_q is not None and str(raw_mids_q).strip():
+                    s_mids = str(raw_mids_q).strip()
+                    if s_mids.startswith("["):
+                        try:
+                            parsed_mids = json.loads(s_mids)
+                        except Exception:
+                            return {
+                                "ok": False,
+                                "error_code": "MALFORMED_DATA_REFUSED",
+                                "status_kind": "dependency-returns-garbage",
+                                "failure_state": "dependency-returns-garbage",
+                                "message": "Malformed Anvil request or invalid engine output",
+                                "error": "Malformed Anvil request or invalid engine output",
+                            }, 400
+                    else:
+                        parsed_mids = [x.strip() for x in s_mids.split(",") if x.strip()]
+                return _as.get_scoping_v2_state(
+                    cdir,
+                    selected_module_ids=parsed_mids,
+                    software_spec=str(raw_sw_q) if raw_sw_q is not None else None,
+                    paper_spec=str(raw_pp_q) if raw_pp_q is not None else None,
+                    analysis_id=aid_get,
+                )
+            if norm_verb == "anvil/replication" or act_get in ("replication", "replication_state"):
+                from steward_cockpit import anvil_replication_job as _arj
+                raw_jid = qs.get("job_id")
+                if isinstance(raw_jid, list):
+                    raw_jid = raw_jid[0] if raw_jid else None
+                return _arj.get_replication_state(cdir, analysis_id=aid_get, job_id=str(raw_jid) if raw_jid else None)
+            if norm_verb == "anvil/comprehension" or act_get in ("comprehension", "semantic_state"):
+                from steward_cockpit import anvil_comprehension_engine as _ace
+                raw_ss = qs.get("scope_sha256")
+                if isinstance(raw_ss, list):
+                    raw_ss = raw_ss[0] if raw_ss else None
+                return _ace.get_comprehension_state(cdir, scope_sha256=str(raw_ss) if raw_ss else None, analysis_id=aid_get)
+            if norm_verb == "anvil/literature" or act_get in ("literature", "literature_state"):
+                from steward_cockpit import anvil_literature_job as _alj
+                return _alj.get_literature_state(cdir, analysis_id=aid_get)
+            if norm_verb == "anvil/analyses" or act_get in ("analyses", "list_analyses") or str(raw_an_q or "").strip().lower() in ("1", "true", "yes"):
+                inc_arch = qs.get("include_archived")
+                if isinstance(inc_arch, list):
+                    inc_arch = inc_arch[0] if inc_arch else ""
+                return _as.list_cockpit_analyses(
+                    cdir,
+                    include_archived=str(inc_arch or "").strip().lower() in ("1", "true", "yes"),
+                )
+            if norm_verb == "anvil/v4_state" or act_get == "v4_state":
+                return _as.get_v4_cockpit_state(cdir, analysis_id=aid_get)
+            if norm_verb == "anvil/source" or act_get == "source":
+                raw_file_q = qs.get("file") if qs.get("file") is not None else qs.get("path")
+                if isinstance(raw_file_q, list):
+                    raw_file_q = raw_file_q[0] if raw_file_q else ""
+                rel_file = str(raw_file_q or "").strip()
+                src_out = _as.get_cockpit_file_source(cdir, rel_file, analysis_id=aid_get)
                 if isinstance(src_out, tuple) and len(src_out) == 2:
                     return src_out
                 return src_out, 200
-            except ValueError as exc:
-                if hasattr(exc, "payload") and hasattr(exc, "http_status"):
-                    return exc.payload, int(exc.http_status)
-                msg = str(exc)
-                msg_low = msg.lower()
-                if "bound_exceeded_refusal" in msg_low or "exceeds 2 mb" in msg_low:
-                    return {"ok": False, "error_code": "BOUND_EXCEEDED_REFUSAL", "error": msg, "message": msg}, 413
-                is_escape = any(
-                    tok in msg_low
-                    for tok in ("traversal", "permitted", "outside", "restricted", "symlink", "escape")
-                )
-                err_code = 403 if is_escape else 400
-                return {
-                    "ok": False,
-                    "error_code": "PATH_ESCAPE_REFUSED" if is_escape else "MALFORMED_DATA_REFUSED",
-                    "error": msg,
-                    "message": msg,
-                }, err_code
-        if norm_verb == "anvil/walkthrough" or act_get == "walkthrough":
-            return _run_with_cockpit_usage_attribution(
-                "anvil", "walkthrough", cdir, qs,
-                lambda: _as.walkthrough_in_session(cdir, str(qs.get("block_id") or qs.get("block") or "")),
-            ), 200
-        summary_only = str(qs.get("summary") or "").strip().lower() in ("1", "true", "yes")
-        return _as.get_session_status(cdir, summary_only=summary_only), 200
+            if norm_verb == "anvil/walkthrough" or act_get == "walkthrough":
+                raw_blk = qs.get("block_id") if qs.get("block_id") is not None else qs.get("block")
+                if isinstance(raw_blk, list):
+                    raw_blk = raw_blk[0] if raw_blk else ""
+                return _run_with_cockpit_usage_attribution(
+                    "anvil", "walkthrough", cdir, qs,
+                    lambda: _as.walkthrough_in_session(cdir, str(raw_blk or ""), analysis_id=aid_get),
+                ), 200
+            raw_sum_q = qs.get("summary")
+            if isinstance(raw_sum_q, list):
+                raw_sum_q = raw_sum_q[0] if raw_sum_q else ""
+            summary_only = str(raw_sum_q or "").strip().lower() in ("1", "true", "yes")
+            return _as.get_session_status(cdir, summary_only=summary_only, analysis_id=aid_get), 200
+        except ValueError as exc:
+            if hasattr(exc, "payload") and hasattr(exc, "http_status"):
+                return exc.payload, int(exc.http_status)
+            msg = str(exc)
+            msg_low = msg.lower()
+            if "bound_exceeded_refusal" in msg_low or "exceeds 2 mb" in msg_low:
+                return {"ok": False, "error_code": "BOUND_EXCEEDED_REFUSAL", "error": msg, "message": msg}, 413
+            is_escape = any(
+                tok in msg_low
+                for tok in ("traversal", "permitted", "outside", "restricted", "symlink", "escape")
+            )
+            err_code = 403 if is_escape else 400
+            return {
+                "ok": False,
+                "error_code": "PATH_ESCAPE_REFUSED" if is_escape else "MALFORMED_DATA_REFUSED",
+                "error": msg,
+                "message": msg,
+            }, err_code
     if verb == "aegis":
         def _do_aegis_get(_aeg):
             target_q = str(qs.get("target") or "").strip()
@@ -5832,6 +6193,19 @@ def handle_post(cdir, verb, body):
             pass
         _DELIV_CACHE.clear()
         return {"ok": True, "cleared": cleared}, 200
+    if verb in ("wave-state", "wave-map"):
+        from steward_cockpit import wave_map_model as _wmm
+        try:
+            res_w = _wmm.mutate_wave_state(cdir, body)
+        except _wmm.WaveStateValidationError as exc:
+            return {"ok": False, "error": str(exc)}, 400
+        _DELIV_CACHE.clear()
+        return res_w, 200
+    if verb == "deliverable-batches":
+        from steward_cockpit import deliverable_shelves as _ds
+        res_b = _ds.update_curation(cdir, body if isinstance(body, dict) else {})
+        _DELIV_CACHE.clear()
+        return res_b, 200
     if verb == "plan":
         if not cdir or not os.path.isdir(str(cdir)):
             return _plan_missing_response()
@@ -5965,40 +6339,186 @@ def handle_post(cdir, verb, body):
                 pass
         _DELIV_CACHE.clear()
         return {"ok": True, "step_id": done_id or req_id, "step_name": done_name or req_id, "next_step_id": next_id, "next_step_name": next_name}, 200
-    if verb in ("anvil", "anvil/walkthrough"):
-        import importlib
+    if verb in ("anvil", "anvil/walkthrough", "anvil/analyses", "anvil/discover", "anvil/scoping", "anvil/replication", "anvil/comprehension", "anvil/literature"):
         from steward_cockpit import anvil_session as _as
-        try:
-            _as_mtime = Path(_as.__file__).stat().st_mtime_ns
-            if getattr(_as, "_LOADED_MTIME_NS", None) != _as_mtime:
-                _as = importlib.reload(_as)
-                _as._LOADED_MTIME_NS = _as_mtime
-        except Exception:
-            pass
+        from steward_cockpit import anvil_scoping_v6 as _as6
+        from steward_cockpit import anvil_py_deps as _apd
+        from steward_cockpit import anvil_replication_job as _arj
+        from steward_cockpit import anvil_verification_guard as _avg
+        from steward_cockpit import anvil_comprehension_engine as _ace
+        from steward_cockpit import anvil_literature_job as _alj
+        for _m_ref in (_as, _as6, _apd, _arj, _avg, _ace, _alj):
+            try:
+                _mt = Path(_m_ref.__file__).stat().st_mtime_ns
+                if getattr(_m_ref, "_LOADED_MTIME_NS", None) != _mt:
+                    importlib.reload(_m_ref)
+                    _m_ref._LOADED_MTIME_NS = _mt
+            except Exception:
+                pass
         if not isinstance(body, dict):
-            return {"ok": False, "error_code": "MALFORMED_DATA_REFUSED", "error": "JSON object body required"}, 400
-        act = "walkthrough" if verb == "anvil/walkthrough" else str(body.get("action") or "start_code").strip()
+            msg_g = "Malformed Anvil request or invalid engine output"
+            return {"ok": False, "error_code": "MALFORMED_DATA_REFUSED", "status_kind": "dependency-returns-garbage", "failure_state": "dependency-returns-garbage", "error": msg_g, "message": msg_g}, 400
+        act = (
+            "walkthrough"
+            if verb == "anvil/walkthrough"
+            else (
+                "discover_candidates"
+                if verb == "anvil/discover"
+                else str(body.get("action") or ("list_analyses" if verb == "anvil/analyses" else "start_code")).strip()
+            )
+        )
+        aid_post = body.get("analysis_id") if "analysis_id" in body else None
         try:
+            if act in ("discover", "discover_candidates"):
+                return _as.discover_cockpit_candidates_http(cdir)
+            if act == "scoping_preview":
+                return _as.get_scoping_v2_state(
+                    cdir,
+                    selected_module_ids=body["module_ids"] if "module_ids" in body else body.get("selected_module_ids"),
+                    software_spec=body.get("software_spec") if "software_spec" in body else body.get("software_target"),
+                    paper_spec=body.get("paper_spec") if "paper_spec" in body else body.get("paper_target"),
+                    analysis_id=aid_post,
+                    require_v6=True,
+                )
+            if act in ("scoping", "scoping_state"):
+                return _as.get_scoping_v2_state(
+                    cdir,
+                    selected_module_ids=body["module_ids"] if "module_ids" in body else body.get("selected_module_ids"),
+                    software_spec=body.get("software_spec") if "software_spec" in body else body.get("software_target"),
+                    paper_spec=body.get("paper_spec") if "paper_spec" in body else body.get("paper_target"),
+                    analysis_id=aid_post,
+                    require_v6=False,
+                )
+            if act in ("replication_state", "replication_status"):
+                from steward_cockpit import anvil_replication_job as _arj
+                return _arj.get_replication_state(cdir, analysis_id=aid_post, job_id=body.get("job_id"))
+            if act in ("replication_consent", "issue_replication_consent"):
+                from steward_cockpit import anvil_replication_job as _arj
+                return _arj.issue_replication_consent(cdir, body)
+            if act in ("replication_start", "replication_phase_b", "run_replication"):
+                from steward_cockpit import anvil_replication_job as _arj
+                eff_body = dict(body)
+                if act == "replication_phase_b" and "phase" not in eff_body:
+                    eff_body["phase"] = "B"
+                out = _run_with_cockpit_usage_attribution(
+                    "anvil", act, cdir, eff_body, lambda: _arj.start_replication_job(cdir, eff_body)
+                )
+                return out if (isinstance(out, tuple) and len(out) == 2) else (out, 200)
+            if act in ("replication_install_deps", "approve_replication_deps"):
+                from steward_cockpit import anvil_replication_job as _arj
+                out = _run_with_cockpit_usage_attribution(
+                    "anvil", act, cdir, body, lambda: _arj.approve_install_and_run_replication(cdir, body)
+                )
+                return out if (isinstance(out, tuple) and len(out) == 2) else (out, 200)
+            if act in ("replication_cancel", "cancel_replication"):
+                from steward_cockpit import anvil_replication_job as _arj
+                return _arj.cancel_replication_job(cdir, body)
+            if act in ("replication_queue_refactor", "queue_refactoring"):
+                from steward_cockpit import anvil_replication_job as _arj
+                return _arj.queue_vetted_refactoring(cdir, body)
+            if act in ("replication_export_deliverables", "export_replication_deliverables"):
+                from steward_cockpit import anvil_replication_job as _arj
+                return _arj.export_replication_deliverables(cdir, body)
+            if act in ("scoping_turn", "scoping_chat"):
+                out = _run_with_cockpit_usage_attribution(
+                    "anvil", act, cdir, body, lambda: _as.run_scoping_v2_turn(cdir, body)
+                )
+                return out if (isinstance(out, tuple) and len(out) == 2) else (out, 200)
+            if act in ("lock_scope", "scoping_lock"):
+                out = _run_with_cockpit_usage_attribution(
+                    "anvil", act, cdir, body, lambda: _as.lock_scope_v2(cdir, body)
+                )
+                return out if (isinstance(out, tuple) and len(out) == 2) else (out, 200)
+            if act == "quick_literature_sketch":
+                out = _run_with_cockpit_usage_attribution(
+                    "anvil", act, cdir, body, lambda: _as.run_quick_literature_sketch(cdir, body)
+                )
+                return out if (isinstance(out, tuple) and len(out) == 2) else (out, 200)
+            if act in ("semantic_state", "comprehension_state"):
+                return _ace.get_comprehension_state(cdir, scope_sha256=body.get("scope_sha256"), analysis_id=aid_post)
+            if act in ("semantic_consent", "issue_comprehension_consent"):
+                return _ace.issue_comprehension_consent(cdir, body)
+            if act in ("semantic_run", "run_comprehension", "run_pass2"):
+                out = _run_with_cockpit_usage_attribution(
+                    "anvil", act, cdir, body, lambda: _ace.run_semantic_comprehension(cdir, body)
+                )
+                return out if (isinstance(out, tuple) and len(out) == 2) else (out, 200)
+            if act in ("literature_state", "get_literature"):
+                return _alj.get_literature_state(cdir, analysis_id=aid_post)
+            if act in ("literature_consent", "issue_literature_consent"):
+                return _alj.issue_literature_consent(cdir, body)
+            if act in ("literature_start", "run_literature"):
+                out = _run_with_cockpit_usage_attribution(
+                    "anvil", act, cdir, body, lambda: _alj.start_literature_job(cdir, body)
+                )
+                return out if (isinstance(out, tuple) and len(out) == 2) else (out, 200)
+            if act in ("literature_cancel", "cancel_literature"):
+                return _alj.cancel_literature_job(cdir, body)
+            if act in ("analyses", "list_analyses"):
+                return _as.list_cockpit_analyses(cdir, include_archived=bool(body.get("include_archived")))
+            if act in ("register_legacy", "register_legacy_analysis"):
+                return _as.register_legacy_analysis(
+                    cdir,
+                    analysis_id=aid_post,
+                    title=str(body.get("title") or ""),
+                )
+            if act in ("create_analysis", "new_analysis"):
+                out = _run_with_cockpit_usage_attribution(
+                    "anvil", act, cdir, body,
+                    lambda: _as.create_cockpit_analysis(
+                        cdir,
+                        analysis_id=aid_post,
+                        title=str(body.get("title") or ""),
+                        mode=str(body.get("mode") or "code"),
+                        software_spec=str(body.get("software_target") or body.get("software_spec") or "."),
+                        compare_spec=str(body.get("compare_target") or ""),
+                        paper_spec=str(body.get("paper_target") or body.get("paper_spec") or ""),
+                        direction=body.get("direction", ""),
+                        active_pipeline=str(body.get("active_pipeline") or ""),
+                        selected_pipelines=body.get("selected_pipelines"),
+                        materialize_replication_package=body.get("materialize_replication_package", True),
+                        max_concurrency=body.get("max_concurrency", 2),
+                        set_active=bool(body.get("set_active", True)),
+                    ),
+                )
+                return out if (isinstance(out, tuple) and len(out) == 2) else (out, 200)
+            if act in ("switch_analysis", "switch"):
+                return _as.switch_cockpit_analysis(cdir, aid_post)
+            if act in ("export_replication_package", "materialize_replication_package"):
+                raw_cf = body.get("closure_files")
+                cf_list = [str(x) for x in raw_cf] if isinstance(raw_cf, list) else None
+                raw_ap = str(body.get("active_pipeline") or "").strip() or None
+                return _as.export_replication_package(
+                    cdir,
+                    analysis_id=aid_post,
+                    closure_files=cf_list,
+                    active_pipeline=raw_ap,
+                )
             if act == "v4_session":
-                return _as.save_v4_cockpit_ui_session(cdir, body)
+                return _as.save_v4_cockpit_ui_session(cdir, body, analysis_id=aid_post)
             if act == "v4_chat":
                 out = _run_with_cockpit_usage_attribution(
-                    "anvil", act, cdir, body, lambda: _as.run_v4_cockpit_chat(cdir, body)
+                    "anvil", act, cdir, body, lambda: _as.run_v4_cockpit_chat(cdir, body, analysis_id=aid_post)
                 )
                 return out if (isinstance(out, tuple) and len(out) == 2) else (out, 200)
             if act in ("v4_xval", "xval_audit"):
                 out = _run_with_cockpit_usage_attribution(
-                    "anvil", act, cdir, body, lambda: _as.run_v4_cockpit_xval(cdir, body)
+                    "anvil", act, cdir, body, lambda: _as.run_v4_cockpit_xval(cdir, body, analysis_id=aid_post)
+                )
+                return out if (isinstance(out, tuple) and len(out) == 2) else (out, 200)
+            if act in ("trace_install_deps", "approve_trace_deps"):
+                out = _run_with_cockpit_usage_attribution(
+                    "anvil", act, cdir, body, lambda: _as.approve_install_and_run_trace(cdir, body, analysis_id=aid_post)
                 )
                 return out if (isinstance(out, tuple) and len(out) == 2) else (out, 200)
             if act == "v4_trace":
                 out = _run_with_cockpit_usage_attribution(
-                    "anvil", act, cdir, body, lambda: _as.run_v4_cockpit_trace(cdir, body)
+                    "anvil", act, cdir, body, lambda: _as.run_v4_cockpit_trace(cdir, body, analysis_id=aid_post)
                 )
                 return out if (isinstance(out, tuple) and len(out) == 2) else (out, 200)
             if act == "v4_profile_lit":
                 out = _run_with_cockpit_usage_attribution(
-                    "anvil", act, cdir, body, lambda: _as.run_v4_cockpit_profile_lit(cdir, body)
+                    "anvil", act, cdir, body, lambda: _as.run_v4_cockpit_profile_lit(cdir, body, analysis_id=aid_post)
                 )
                 return out if (isinstance(out, tuple) and len(out) == 2) else (out, 200)
             if act == "walkthrough":
@@ -6007,6 +6527,7 @@ def handle_post(cdir, verb, body):
                     lambda: _as.walkthrough_in_session(
                         cdir,
                         str(body.get("block_id") or body.get("block") or ""),
+                        analysis_id=aid_post,
                     ),
                 ), 200
             if act in ("start_code", "start_paper"):
@@ -6019,6 +6540,14 @@ def handle_post(cdir, verb, body):
                         compare_spec=str(body.get("compare_target") or ""),
                         paper_spec=str(body.get("paper_target") or ""),
                         signed_off_drops=body.get("signed_off_drops") if isinstance(body.get("signed_off_drops"), list) else None,
+                        analysis_id=aid_post,
+                        title=str(body.get("title") or ""),
+                        direction=body.get("direction", ""),
+                        active_pipeline=str(body.get("active_pipeline") or ""),
+                        selected_pipelines=body.get("selected_pipelines"),
+                        materialize_replication_package=body.get("materialize_replication_package", True),
+                        max_concurrency=body.get("max_concurrency", 2),
+                        create_new=bool(body.get("create_new", False)),
                     ),
                 )
                 try:
@@ -6032,21 +6561,36 @@ def handle_post(cdir, verb, body):
                     pass
                 return res, 200
             if act == "probe_block":
-                return _run_with_cockpit_usage_attribution(
+                raw_tcmd = body.get("test_cmd")
+                if raw_tcmd is not None and raw_tcmd != "" and raw_tcmd != []:
+                    if isinstance(raw_tcmd, (str, bytes)) or not isinstance(raw_tcmd, list) or body.get("operator_consent_confirmed") is not True:
+                        return {
+                            "ok": False,
+                            "error_code": "EXECUTION_POLICY_REFUSED",
+                            "cwe": "CWE-78",
+                            "http_status": 403,
+                            "error": "Raw probe_block.test_cmd strings are retired; pass an explicit argv list with operator_consent_confirmed: true.",
+                            "message": "Raw probe_block.test_cmd strings are retired; pass an explicit argv list with operator_consent_confirmed: true.",
+                        }, 403
+                out_pb = _run_with_cockpit_usage_attribution(
                     "anvil", act, cdir, body,
                     lambda: _as.probe_block_in_session(
                         cdir,
                         str(body.get("block_id") or ""),
                         str(body.get("lock_description") or ""),
-                        str(body.get("test_cmd") or ""),
+                        raw_tcmd if isinstance(raw_tcmd, list) else "",
+                        analysis_id=aid_post,
+                        operator_consent_confirmed=bool(body.get("operator_consent_confirmed")),
                     ),
-                ), 200
+                )
+                return out_pb if (isinstance(out_pb, tuple) and len(out_pb) == 2) else (out_pb, 200)
             if act == "sign_off_drop":
                 return _run_with_cockpit_usage_attribution(
                     "anvil", act, cdir, body,
                     lambda: _as.sign_off_null_space_in_session(
                         cdir,
                         str(body.get("function_name") or ""),
+                        analysis_id=aid_post,
                     ),
                 ), 200
             if act == "attach_paper":
@@ -6055,6 +6599,7 @@ def handle_post(cdir, verb, body):
                     lambda: _as.attach_paper_to_session(
                         cdir,
                         str(body.get("paper_target") or ""),
+                        analysis_id=aid_post,
                     ),
                 ), 200
             if act == "chat":
@@ -6066,6 +6611,7 @@ def handle_post(cdir, verb, body):
                         q_str,
                         str(body.get("mode") or "map"),
                         str(body.get("target") or ""),
+                        analysis_id=aid_post,
                     ),
                 )
                 try:
@@ -6091,11 +6637,29 @@ def handle_post(cdir, verb, body):
             if act == "reset":
                 return _run_with_cockpit_usage_attribution(
                     "anvil", act, cdir, body,
-                    lambda: _as.reset_cockpit_session(cdir),
+                    lambda: _as.reset_cockpit_session(cdir, analysis_id=aid_post),
                 ), 200
-            return {"ok": False, "error": f"unknown anvil action: {act}"}, 400
+            msg_u = f"Malformed Anvil request or invalid engine output (unknown action: {act})"
+            return {
+                "ok": False,
+                "error_code": "MALFORMED_DATA_REFUSED",
+                "status_kind": "dependency-returns-garbage",
+                "failure_state": "dependency-returns-garbage",
+                "error": f"unknown anvil action: {act}",
+                "message": msg_u,
+            }, 400
         except ValueError as exc:
-            return {"ok": False, "error": str(exc)}, 400
+            if hasattr(exc, "payload") and hasattr(exc, "http_status"):
+                return exc.payload, int(exc.http_status)
+            msg = str(exc)
+            msg_low = msg.lower()
+            is_escape = any(
+                tok in msg_low
+                for tok in ("traversal", "permitted", "outside", "restricted", "symlink", "escape")
+            )
+            if is_escape:
+                return {"ok": False, "error_code": "PATH_ESCAPE_REFUSED", "error": msg, "message": msg}, 403
+            return {"ok": False, "error_code": "MALFORMED_DATA_REFUSED", "error": msg, "message": msg}, 400
     if verb == "aegis":
         if not isinstance(body, dict):
             return {
@@ -6238,6 +6802,13 @@ def handle_post(cdir, verb, body):
     if verb == "refinement-update":
         from steward_cockpit.refinement_client import update
         result = update(cdir, body)
+        if result.get("ok"):
+            try:
+                from steward_cockpit import deliverable_shelves as _ds
+                _ds.sync_refinement_batches(cdir, refinement_state=result.get("state"), operation=body if isinstance(body, dict) else None)
+            except Exception:
+                pass
+            _DELIV_CACHE.clear()
         return result, 200 if result.get("ok") else 409
     if verb == "refinement-open":
         # An explicit authenticated cockpit click, not a GET/prefetch receipt.
@@ -6588,6 +7159,12 @@ def handle_post(cdir, verb, body):
             return {"ok": False, "error": "that file type is not openable here"}, 400
         if not os.path.isfile(target):
             return {"ok": False, "error": "file not found"}, 404
+        import paths as _paths_open
+        if _paths_open.is_windows_service_or_session0():
+            return {
+                "ok": False,
+                "error": "Anchor service is running in background Session 0; open this deliverable via its browser preview link instead.",
+            }, 409
         try:
             os.startfile(target); return {"ok": True}, 200
         except Exception as e:

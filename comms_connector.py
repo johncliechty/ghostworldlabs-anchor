@@ -12758,8 +12758,12 @@ class _ScribeFifoWorkerPool:
                 cur["state_history"] = hist
                 cur.pop("error_code", None)
                 cur.pop("error_message", None)
-                cur["completed_at_ts"] = time.time()
-                cur["updated_at_ts"] = time.time()
+                now_ready_ts = time.time()
+                if not cur.get("ready_at_ts"):
+                    cur["ready_at_ts"] = now_ready_ts
+                cur["completed_at_ts"] = now_ready_ts
+                cur["updated_at_ts"] = now_ready_ts
+                st["auto_open_ts"] = float(cur["ready_at_ts"])
             else:
                 if not hist or hist[-1] != "error":
                     hist.append("error")
@@ -13085,13 +13089,15 @@ def queue_speed_racer_draft(body: dict, *, async_draft: bool | None = None) -> d
             if steward_directions
             else "Queued for Scribe FIFO worker — synthesizing voice-faithful response."
         )
+        now_q_ts = time.time()
         queued_item = {
             "id": draft_id,
             "uid": uid or draft_id,
             "client_req_id": client_req_id,
             "status": initial_status_async,
             "state_history": [initial_status_async],
-            "queued_at_ts": time.time(),
+            "queued_at_ts": now_q_ts,
+            "ready_at_ts": now_q_ts if initial_status_async == "ready" else 0.0,
             "account_id": acct_id,
             "account_badge": acct_badge,
             "account": acct_badge,
@@ -13455,6 +13461,7 @@ def queue_speed_racer_draft(body: dict, *, async_draft: bool | None = None) -> d
         "original_scribe_draft": initial_capped_draft,
         "last_scribe_draft": initial_capped_draft,
         "user_edited": False,
+        "ready_at_ts": time.time(),
         "updated_at_ts": time.time(),
         "attachments": atts,
         "created_at": datetime.now().strftime("%H:%M"),
@@ -14620,6 +14627,628 @@ def build_chief_of_staff_recommendations_from_the_list(wl_state: dict | None = N
     return recommendations
 
 
+_COS_COCKPIT_CANDIDATES_CACHE: dict[str, tuple[int, int, list[dict]]] = {}
+
+
+def _cos_feedback_ledger_path() -> Path:
+    p = paths.data_dir() / ".anchor" / "cos-feedback-ledger.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _default_cos_feedback_ledger() -> dict:
+    return {
+        "schema": "anchor.cos.feedback.v1",
+        "tombstoned_keys": {},
+        "acted_keys": {},
+        "postponed_until": {},
+        "category_weights": {"Teaching": 1.0, "Research": 1.0, "Business": 1.0, "Personal": 1.0},
+        "source_weights": {
+            "steward_dispatch": 1.35,
+            "cockpit_review": 1.25,
+            "cockpit_active": 1.15,
+            "cave_dialogue": 1.15,
+            "watchlist_due": 1.25,
+            "prime_email": 1.10,
+            "star_chart_q2": 1.15,
+        },
+        "cockpit_weights": {},
+        "action_history": [],
+    }
+
+
+def load_cos_feedback_ledger() -> dict:
+    p = _cos_feedback_ledger_path()
+    base = _default_cos_feedback_ledger()
+    if not p.is_file():
+        return base
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return base
+        for k, v in base.items():
+            if k not in raw or not isinstance(raw[k], type(v)):
+                raw[k] = copy.deepcopy(v)
+        return raw
+    except Exception:
+        return base
+
+
+def save_cos_feedback_ledger(ledger: dict) -> None:
+    p = _cos_feedback_ledger_path()
+    lock_p = p.with_name(p.name + ".lock")
+    paths.atomic_write_json(p, ledger, lock_path=lock_p, timeout_sec=STORE_LOCK_TIMEOUT_SEC)
+
+
+def record_cos_suggestion_feedback(
+    cos_action: str,
+    suggestion: dict,
+    *,
+    directions: str = "",
+    defer_hours: float = 18.0,
+) -> dict:
+    """Persist structured learning signal from Chief-of-Staff actions.
+
+    Separates `postpone` (timing deferral — snoozes `source_key` without penalizing topic/deep-work weights)
+    from `delete` (tombstones `source_key` and lowers noisy source/category weight), while `act_now`,
+    `add_to_list`, `send_to_steward`, and `complete` reinforce matching category, source, and cockpit weights.
+    """
+    act = str(cos_action or "").strip().lower()
+    sk = str(suggestion.get("source_key") or suggestion.get("id") or "").strip()
+    cat = str(suggestion.get("category") or "Business").strip()
+    src = str(suggestion.get("source_kind") or suggestion.get("source") or "cockpit_active").strip()
+    ck_name = str(suggestion.get("cockpit_name") or suggestion.get("cockpitName") or "").strip()
+    now_ts = time.time()
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    ledger = load_cos_feedback_ledger()
+    cat_w = dict(ledger.get("category_weights") or {})
+    src_w = dict(ledger.get("source_weights") or {})
+    ck_w = dict(ledger.get("cockpit_weights") or {})
+    tombs = dict(ledger.get("tombstoned_keys") or {})
+    acted = dict(ledger.get("acted_keys") or {})
+    postp = dict(ledger.get("postponed_until") or {})
+    hist = list(ledger.get("action_history") or [])
+
+    def _clamp(v: float) -> float:
+        return round(max(0.4, min(2.5, float(v))), 4)
+
+    if act in ("act_now", "add_to_list", "send_to_steward", "complete", "modify"):
+        cat_w[cat] = _clamp(float(cat_w.get(cat, 1.0)) + 0.16)
+        src_w[src] = _clamp(float(src_w.get(src, 1.0)) + 0.14)
+        if ck_name:
+            ck_w[ck_name] = _clamp(float(ck_w.get(ck_name, 1.0)) + 0.20)
+        if sk and act in ("act_now", "add_to_list", "complete"):
+            acted[sk] = now_iso
+            postp.pop(sk, None)
+    elif act == "postpone":
+        # Timing mismatch only — do NOT penalize category, source, or Quadrant II deep-work weights
+        if sk:
+            postp[sk] = now_ts + max(0.25, float(defer_hours or 18.0)) * 3600.0
+    elif act in ("delete", "dismiss"):
+        cat_w[cat] = _clamp(float(cat_w.get(cat, 1.0)) - 0.06)
+        src_w[src] = _clamp(float(src_w.get(src, 1.0)) - 0.14)
+        if ck_name:
+            ck_w[ck_name] = _clamp(float(ck_w.get(ck_name, 1.0)) - 0.10)
+        if sk:
+            tombs[sk] = now_iso
+            postp.pop(sk, None)
+
+    hist.append({
+        "at": now_iso,
+        "action": act,
+        "source_key": sk,
+        "title": str(suggestion.get("title") or "")[:140],
+        "category": cat,
+        "source_kind": src,
+        "cockpit_name": ck_name,
+        "directions": str(directions or "")[:240],
+    })
+    ledger["category_weights"] = cat_w
+    ledger["source_weights"] = src_w
+    ledger["cockpit_weights"] = ck_w
+    ledger["tombstoned_keys"] = tombs
+    ledger["acted_keys"] = acted
+    ledger["postponed_until"] = {k: v for k, v in postp.items() if float(v or 0) > now_ts - 86400}
+    ledger["action_history"] = hist[-200:]
+    save_cos_feedback_ledger(ledger)
+    return ledger
+
+
+def _infer_silent_oranges_skill(title: str, category: str = "", detail: str = "") -> str:
+    """Silently pick the best Parable-of-the-Oranges skill in the background (never cluttering the UI)."""
+    blob = f"{title} {category} {detail}".lower()
+    if any(k in blob for k in ("syllabus", "lecture", "course", "exam", "student", "stat ", "mba", "teaching", "class")):
+        return "Einstein"
+    if any(k in blob for k in ("trust", "contract", "agreement", "legal", "dissolution", "compliance", "patent", "filing")):
+        return "Legal-Beagle"
+    if any(k in blob for k in ("valuation", "waterfall", "cap table", "tax", "budget", "finance", "deal", "pricing")):
+        return "Financial-Analyst"
+    if any(k in blob for k in ("novel", "book", "chapter", "story", "manuscript", "dragon", "magi")):
+        return "Chekhov"
+    if any(k in blob for k in ("email", "reply", "respond", "inbox", "follow up with")):
+        return "Scribe"
+    if any(k in blob for k in ("brainstorm", "ideate", "novel idea", "pivot")):
+        return "Superjump"
+    if any(k in blob for k in ("review", "audit", "critique", "premortem", "verify")):
+        return "Gandalf"
+    return "researchPrime"
+
+
+def _synthesize_silent_plan_steps(title: str, detail: str, cockpit_name: str, skill: str, proposal_op: str = "") -> list[str]:
+    clean_t = str(title or "effort").strip()
+    ck = str(cockpit_name or "AI Cockpit").strip()
+    if proposal_op == "archive_tile" or "review" in clean_t.lower():
+        return [
+            f"Inspect latest output for '{clean_t}' in {ck} and verify completeness.",
+            f"Run silent {skill} check if adjustments are needed, or mark complete on The List.",
+        ]
+    return [
+        f"Scope concrete deliverable & acceptance check for '{clean_t}' in {ck}.",
+        f"Execute next work pass (Steward prepped with {skill} in the background).",
+        "Verify result and check off on The List.",
+    ]
+
+
+def _scan_live_cockpit_and_cave_candidates(
+    existing_titles_low: set[str] | None = None,
+    existing_pids: set[str] | None = None,
+) -> list[dict]:
+    """Fast `<1 ms` steady-state `(mtime_ns, size)`-gated scanner across active AI Cockpits and Cave of Wonders.
+
+    Finds active cockpit efforts, `for_review` deliverables, and recent Cave / cockpit commitments that are NOT
+    yet tracked on The List (or have newly reviewable deliverables), without ever full-scanning transcripts on every request.
+    """
+    existing_titles_low = existing_titles_low or set()
+    existing_pids = existing_pids or set()
+    candidates: list[dict] = []
+    if _is_hermetic() and not os.environ.get("ANCHOR_TEST_ENABLE_COCKPIT_SCAN"):
+        return candidates
+    try:
+        import rnd_registry as _rnd
+        projects = [e for e in _rnd.list_projects() if isinstance(e, dict) and _rnd._effective_state(e) == _rnd.STATE_ACTIVE]
+    except Exception:
+        projects = []
+
+    now_ts = time.time()
+    recent_cutoff = now_ts - 7 * 86400.0  # active within last 7 days
+
+    for proj in projects:
+        pid = str(proj.get("id") or "").strip()
+        pname = str(proj.get("name") or "").strip()
+        folder = str(proj.get("folder_path") or "").strip()
+        grp = str(proj.get("group") or "Research").strip()
+        if not pid or not pname or not folder:
+            continue
+        cat = "Teaching" if "teach" in grp.lower() else (
+            "Personal" if any(x in grp.lower() for x in ("family", "personal")) else (
+                "Business" if any(x in grp.lower() for x in ("commercial", "business", "capital")) else "Research"
+            )
+        )
+        f_path = Path(folder)
+        if not f_path.is_dir():
+            continue
+
+        # Check root cockpit + 1-level effort subdirectories via cheap stat()
+        effort_dirs: list[tuple[str, Path]] = [("", f_path)]
+        if pname.lower() == "campaign" or (f_path / "Cave of Wonders").is_dir():
+            try:
+                for sub in sorted(f_path.iterdir()):
+                    if sub.is_dir() and not sub.name.startswith(".") and (
+                        (sub / ".ecgberht" / "conversation-log.json").is_file() or (sub / "DELIVERABLES.md").is_file()
+                    ):
+                        effort_dirs.append((sub.name, sub))
+            except OSError:
+                pass
+
+        for eff_name, eff_path in effort_dirs[:16]:
+            conv_p = eff_path / ".ecgberht" / "conversation-log.json"
+            plan_p = eff_path / ".ecgberht" / "plan.json"
+            rm_p = eff_path / "roadmap.json"
+            deliv_p = eff_path / "DELIVERABLES.md"
+            stat_files = [p for p in (conv_p, plan_p, rm_p, deliv_p) if p.is_file()]
+            if not stat_files:
+                continue
+            try:
+                max_mtime_ns = max(p.stat().st_mtime_ns for p in stat_files)
+                tot_size = sum(p.stat().st_size for p in stat_files)
+            except OSError:
+                continue
+            if (max_mtime_ns / 1e9) < recent_cutoff:
+                continue
+
+            cache_k = f"{pid}::{eff_name}"
+            cached = _COS_COCKPIT_CANDIDATES_CACHE.get(cache_k)
+            if cached is not None and cached[0] == max_mtime_ns and cached[1] == tot_size:
+                raw_cands = cached[2]
+            else:
+                raw_cands = []
+                disp_ck = f"{eff_name} ({pname})" if eff_name and eff_name.lower() != pname.lower() else pname
+                from urllib.parse import quote as _uq
+                ck_href = f"/steward/v1?pid={pid}&dir={_uq(eff_name, safe='')}"
+
+                active_plan_steps: list[str] = []
+                if plan_p.is_file():
+                    try:
+                        pl_doc = json.loads(plan_p.read_text(encoding="utf-8"))
+                        for ps in (pl_doc.get("steps") or [])[:6]:
+                            if isinstance(ps, dict) and str(ps.get("status") or "").lower() not in ("done", "completed", "cancelled"):
+                                pt = str(ps.get("title") or ps.get("text") or "").strip()
+                                if pt:
+                                    active_plan_steps.append(pt)
+                    except Exception:
+                        pass
+
+                # 1. Check roadmap.json for `for_review` deliverables or active in-progress steps
+                if rm_p.is_file():
+                    try:
+                        rm_doc = json.loads(rm_p.read_text(encoding="utf-8"))
+                        for d in (rm_doc.get("deliverables") or [])[:6]:
+                            if not isinstance(d, dict):
+                                continue
+                            dst = str(d.get("status") or d.get("state") or "").strip().lower()
+                            d_title = str(d.get("title") or d.get("label") or d.get("name") or "").strip()
+                            if dst in ("for_review", "review", "needs_review") and d_title:
+                                sk = f"cockpit-review:{pid}:{eff_name}:{d.get('id') or d_title.lower()[:40]}"
+                                raw_cands.append({
+                                    "source_key": sk,
+                                    "source_kind": "cockpit_review",
+                                    "title": f"Review deliverable: {d_title}",
+                                    "summary": f"Ready for review in {disp_ck}",
+                                    "detail": f"{disp_ck} produced '{d_title}' marked ready for your review.",
+                                    "category": cat,
+                                    "priority": 1,
+                                    "base_score": 88.0,
+                                    "is_q2": True,
+                                    "cockpit_name": disp_ck,
+                                    "cockpit_href": ck_href,
+                                    "pid": pid,
+                                    "effort_dir": eff_name,
+                                    "proposal_op": "review",
+                                })
+                    except Exception:
+                        pass
+
+                # 2. Tail-inspect recent user turn in conversation-log.json when modified within 72h
+                if conv_p.is_file() and (conv_p.stat().st_mtime_ns / 1e9) >= (now_ts - 3 * 86400.0):
+                    try:
+                        # Only parse if <= 4 MB to guarantee <20ms worst-case cold read
+                        if conv_p.stat().st_size <= 4 * 1024 * 1024:
+                            c_doc = json.loads(conv_p.read_text(encoding="utf-8"))
+                            turns = (
+                                (c_doc.get("turns") or c_doc.get("messages") or [])
+                                if isinstance(c_doc, dict)
+                                else (c_doc if isinstance(c_doc, list) else [])
+                            )
+                            user_turns = [
+                                t for t in (turns or [])[-8:]
+                                if isinstance(t, dict) and str(t.get("role") or t.get("speaker") or "").lower() in ("user", "human", "john")
+                            ]
+                            if user_turns:
+                                last_u = user_turns[-1]
+                                u_txt = re.sub(r"\s+", " ", str(last_u.get("text") or last_u.get("content") or "")).strip()
+                                if len(u_txt) >= 18 and eff_name != "Star Chart":
+                                    is_cave = (eff_name == "Cave of Wonders")
+                                    cand_title = (
+                                        f"Follow through on Cave request: {u_txt[:62]}…" if (is_cave and len(u_txt) > 62)
+                                        else (f"Follow through: {u_txt}" if is_cave else f"Advance {disp_ck}")
+                                    )
+                                    sk_act = (
+                                        f"cave-turn:{last_u.get('id') or hashlib.sha1(u_txt[:120].encode('utf-8')).hexdigest()[:10]}"
+                                        if is_cave
+                                        else f"cockpit-active:{pid}:{eff_name}"
+                                    )
+                                    raw_cands.append({
+                                        "source_key": sk_act,
+                                        "source_kind": "cave_dialogue" if is_cave else "cockpit_active",
+                                        "title": cand_title,
+                                        "summary": (
+                                            "Recent Cave of Wonders focus"
+                                            if is_cave
+                                            else (f"Next in {disp_ck}: {active_plan_steps[0][:56]}" if active_plan_steps else f"Active work in {disp_ck} — not yet on The List")
+                                        ),
+                                        "detail": f"Latest activity in {disp_ck}: \"{u_txt[:180]}{'…' if len(u_txt) > 180 else ''}\"",
+                                        "plan_steps": active_plan_steps[:3] if len(active_plan_steps) >= 2 else None,
+                                        "category": cat,
+                                        "priority": 2,
+                                        "base_score": 72.0 + max(0.0, 10.0 - (now_ts - conv_p.stat().st_mtime_ns / 1e9) / 7200.0),
+                                        "is_q2": not is_cave,
+                                        "cockpit_name": disp_ck,
+                                        "cockpit_href": ck_href,
+                                        "pid": pid,
+                                        "effort_dir": eff_name,
+                                        "proposal_op": "add_tile",
+                                    })
+                    except Exception:
+                        pass
+
+                _COS_COCKPIT_CANDIDATES_CACHE[cache_k] = (max_mtime_ns, tot_size, raw_cands)
+
+            for rc in raw_cands:
+                # Skip `cockpit_active` echoes if this cockpit or title is ALREADY on The List!
+                if rc.get("source_kind") == "cockpit_active":
+                    ck_low = str(rc.get("cockpit_name") or "").lower()
+                    if pid in existing_pids or any(ck_low and (ck_low in et or et in ck_low) for et in existing_titles_low):
+                        continue
+                candidates.append(dict(rc))
+    return candidates
+
+
+def build_chief_of_staff_suggestions(wl_state: dict | None = None) -> dict:
+    """Build the tight, adaptive Chief-of-Staff suggestion stack (`top_three` + `overflow` + `overflow_count`).
+
+    Combines:
+      1. Pending Steward proposals (`proposals` from `Send to Steward`, Prime emails, `<=7d` Watchlist deadlines, `for_review` deliverables).
+      2. Untracked active AI Cockpit & Cave of Wonders activity (`_scan_live_cockpit_and_cave_candidates`).
+      3. High-priority Star Chart Goals / Initiatives (`goals_dropdown_catalog`) not yet represented on The List.
+    Applies learned weights from `.anchor/cos-feedback-ledger.json`, filters out `tombstoned_keys` and active
+    `postponed_until` snoozes, silently attaches Parable-of-the-Oranges plans, and reserves >=1 deep-work slot
+    in `top_three` whenever urgent `<=24h` items do not occupy all 3 slots.
+    """
+    st = wl_state if isinstance(wl_state, dict) else load_working_list_spine()
+    tiles = [t for t in (st.get("tiles") or []) if isinstance(t, dict) and not t.get("archived")]
+    existing_titles_low = {str(t.get("title") or "").strip().lower() for t in tiles if str(t.get("title") or "").strip()}
+    existing_ck_low = {str(t.get("cockpitName") or "").replace(" Cockpit", "").strip().lower() for t in tiles if str(t.get("cockpitName") or "").strip()}
+    existing_pids = {str(t.get("cockpitPid") or t.get("cockpitId") or "").strip() for t in tiles if str(t.get("cockpitPid") or t.get("cockpitId") or "").strip()}
+    dismissed_prop_keys = {str(x).strip() for x in (st.get("dismissed_proposal_keys") or []) if str(x).strip()}
+    accepted_prop_keys = {str(x).strip() for x in (st.get("accepted_proposal_keys") or []) if str(x).strip()}
+
+    ledger = load_cos_feedback_ledger()
+    tombs = ledger.get("tombstoned_keys") or {}
+    acted_keys = ledger.get("acted_keys") or {}
+    postp = ledger.get("postponed_until") or {}
+    cat_w = ledger.get("category_weights") or {}
+    src_w = ledger.get("source_weights") or {}
+    ck_w = ledger.get("cockpit_weights") or {}
+    now_ts = time.time()
+
+    pool: list[dict] = []
+    seen_sk: set[str] = set()
+
+    def _add_candidate(cand: dict) -> None:
+        sk = str(cand.get("source_key") or "").strip()
+        if not sk or sk in seen_sk or sk in tombs or sk in dismissed_prop_keys or sk in accepted_prop_keys:
+            return
+        if sk in acted_keys and not cand.get("proposal_id"):
+            return
+        snooze_until = float(postp.get(sk) or 0.0)
+        if snooze_until > now_ts:
+            return
+        title_c = str(cand.get("title") or "").strip()
+        if not title_c:
+            return
+        seen_sk.add(sk)
+        cat_c = str(cand.get("category") or "Business").strip()
+        src_c = str(cand.get("source_kind") or "cockpit_active").strip()
+        ck_c = str(cand.get("cockpit_name") or "Cave of Wonders").strip()
+        skill_c = _infer_silent_oranges_skill(title_c, cat_c, str(cand.get("detail") or ""))
+        mult = float(cat_w.get(cat_c, 1.0)) * float(src_w.get(src_c, 1.0)) * float(ck_w.get(ck_c, 1.0))
+        base_s = float(cand.get("base_score") or 70.0)
+        final_s = round(base_s * mult, 2)
+        sug_id = str(cand.get("id") or ("cos-" + hashlib.sha1(sk.encode("utf-8")).hexdigest()[:10]))
+        plan_steps = cand.get("plan_steps") or _synthesize_silent_plan_steps(
+            title_c,
+            str(cand.get("detail") or ""),
+            ck_c,
+            skill_c,
+            str(cand.get("proposal_op") or ""),
+        )
+        pool.append({
+            "id": sug_id,
+            "source_key": sk,
+            "source_kind": src_c,
+            "proposal_id": str(cand.get("proposal_id") or ""),
+            "proposal_op": str(cand.get("proposal_op") or "add_tile"),
+            "list_tile_id": str(cand.get("list_tile_id") or ""),
+            "title": title_c,
+            "summary": str(cand.get("summary") or cand.get("detail") or "Suggested next action")[:120],
+            "detail": str(cand.get("detail") or cand.get("summary") or title_c),
+            "plan_steps": list(plan_steps),
+            "background_skill": skill_c,
+            "category": cat_c,
+            "priority": _normalize_priority_number(cand.get("priority"), default=2),
+            "cockpit_name": ck_c,
+            "cockpit_href": str(cand.get("cockpit_href") or "/steward/v1"),
+            "pid": str(cand.get("pid") or ""),
+            "effort_dir": str(cand.get("effort_dir") or ""),
+            "email_uid": str(cand.get("email_uid") or ""),
+            "due": str(cand.get("due") or ""),
+            "is_urgent_24h": bool(cand.get("is_urgent_24h")),
+            "is_q2": bool(cand.get("is_q2")),
+            "score": final_s,
+            "steward_plan_prompt": (
+                f"Execute Chief-of-Staff plan for '{title_c}' (using {skill_c} as needed): "
+                + "; ".join(f"({i+1}) {s}" for i, s in enumerate(plan_steps))
+            ),
+        })
+
+    # 1. Pending Steward proposals (from `Send to Steward`, Prime emails, Watchlist deadlines, deliverables)
+    for pr in (st.get("proposals") or []):
+        if not isinstance(pr, dict) or not _is_pending_proposal(pr):
+            continue
+        sk_p = str(pr.get("source_key") or pr.get("id") or "").strip()
+        p_prio = _normalize_priority_number(pr.get("priority"), default=2)
+        src_p = str(pr.get("source") or "steward")
+        is_24h = ":24h" in sk_p or p_prio == 1
+        src_kind = (
+            "steward_dispatch" if src_p == "steward_dispatch"
+            else ("watchlist_due" if "watchlist" in sk_p else ("prime_email" if pr.get("email_uid") else "cockpit_review"))
+        )
+        p_steps = [str(pr.get("step_text")).strip()] if str(pr.get("step_text") or "").strip() else None
+        _add_candidate({
+            "id": str(pr.get("id") or ""),
+            "proposal_id": str(pr.get("id") or ""),
+            "proposal_op": str(pr.get("proposal_op") or "add_tile"),
+            "list_tile_id": str(pr.get("tile_id") or ""),
+            "source_key": sk_p,
+            "source_kind": src_kind,
+            "title": str(pr.get("title") or pr.get("step_text") or "Steward Suggestion"),
+            "summary": str(pr.get("reason") or "Proposed by Steward"),
+            "detail": str(pr.get("step_text") or pr.get("reason") or ""),
+            "plan_steps": p_steps,
+            "category": str(pr.get("category") or "Business"),
+            "priority": p_prio,
+            "cockpit_name": str(pr.get("cockpitName") or "Cave of Wonders"),
+            "cockpit_href": str(pr.get("cockpitUrl") or "/steward/v1"),
+            "email_uid": str(pr.get("email_uid") or ""),
+            "due": str(pr.get("due") or ""),
+            "is_urgent_24h": is_24h,
+            "is_q2": bool(pr.get("is_active_p1_milestone")),
+            "base_score": 95.0 if src_kind == "steward_dispatch" else (90.0 if is_24h else 80.0),
+        })
+
+    # 1b. Open Watchlist deadlines due within <=7d & top actionable Prime emails (live signals without waiting on batch reconcile)
+    try:
+        today_cos = date.today()
+        wl_doc_cos = _read_watchlist_unlocked(_watchlist_path())
+        for w_it in (wl_doc_cos.get("items") or []):
+            if not isinstance(w_it, dict) or str(w_it.get("status") or "open").lower() == "done":
+                continue
+            due_s = str(w_it.get("due") or "")[:10]
+            if not due_s:
+                continue
+            try:
+                days_left = (date.fromisoformat(due_s) - today_cos).days
+            except ValueError:
+                continue
+            if days_left > 7:
+                continue
+            w_id = str(w_it.get("id") or w_it.get("uid") or w_it.get("title") or "").strip()
+            w_title = str(w_it.get("title") or "Watchlist Deadline").strip()
+            if not w_id or w_title.lower() in existing_titles_low:
+                continue
+            win_lbl = "24h" if days_left <= 1 else ("48h" if days_left <= 2 else "7d")
+            w_cat = "Personal" if any(k in w_title.lower() for k in ("family", "flight", "trip", "trust", "birthday")) else "Business"
+            _add_candidate({
+                "source_key": f"watchlist:{w_id}:{win_lbl}",
+                "source_kind": "watchlist_due",
+                "title": w_title,
+                "summary": f"Due {due_s} ({win_lbl} window)",
+                "detail": f"Upcoming commitment '{w_title}' is due {due_s}.",
+                "category": w_cat,
+                "priority": 1 if days_left <= 2 else 2,
+                "cockpit_name": "Cave of Wonders",
+                "cockpit_href": "/steward/v1",
+                "due": due_s,
+                "is_urgent_24h": days_left <= 1,
+                "is_q2": False,
+                "base_score": 91.0 if days_left <= 1 else (84.0 if days_left <= 2 else 76.0),
+            })
+    except Exception:
+        pass
+
+    try:
+        if _comms_sync_path().is_file():
+            sync_cos = load_comms_sync()
+            t_prefs_cos = load_triage_prefs()
+            imp_cos, _ = classify_inbox_emails(
+                sync_cos.get("email_headers") or [],
+                prefs=t_prefs_cos,
+                sent_headers=sync_cos.get("sent_email_headers") or [],
+            )
+            for em_c in (imp_cos or [])[:4]:
+                if not isinstance(em_c, dict):
+                    continue
+                em_uid = str(em_c.get("uid") or "").strip()
+                em_subj = str(em_c.get("subject") or "").strip()
+                if not em_uid or not em_subj:
+                    continue
+                if not (em_c.get("action_required") or int(em_c.get("steward_score") or 0) >= 82):
+                    continue
+                if em_subj.lower() in existing_titles_low:
+                    continue
+                frm_short = str(em_c.get("from") or em_c.get("sender_email") or "Sender").split("<")[0].strip().strip('"')[:28]
+                _add_candidate({
+                    "source_key": f"prime-email:{em_uid}",
+                    "source_kind": "prime_email",
+                    "title": em_subj,
+                    "summary": f"Prime email from {frm_short}",
+                    "detail": f"From {em_c.get('from') or 'Sender'}: {str(em_c.get('snippet') or em_subj)[:180]}",
+                    "category": "Business",
+                    "priority": 1 if int(em_c.get("steward_score") or 0) >= 85 else 2,
+                    "cockpit_name": "Email Hub",
+                    "cockpit_href": "/?comms_open=1&mail_open=1#cal",
+                    "email_uid": em_uid,
+                    "is_urgent_24h": int(em_c.get("steward_score") or 0) >= 88,
+                    "is_q2": False,
+                    "base_score": 85.0 if int(em_c.get("steward_score") or 0) >= 85 else 75.0,
+                })
+    except Exception:
+        pass
+
+    # 2. Live Cross-Cockpit & Cave of Wonders activity candidates
+    for ck_cand in _scan_live_cockpit_and_cave_candidates(existing_titles_low | existing_ck_low, existing_pids):
+        _add_candidate(ck_cand)
+
+    # 3. High-impact Star Chart Quadrant II Goals / Initiatives not yet on The List
+    for g in (st.get("goals_dropdown_catalog") or [])[:8]:
+        if not isinstance(g, dict):
+            continue
+        g_name = str(g.get("name") or g.get("title") or "").strip()
+        if not g_name or g_name.lower() in existing_titles_low:
+            continue
+        if any(g_name.lower() in str(t.get("goalName") or "").lower() for t in tiles):
+            continue
+        g_role = str(g.get("role") or g.get("kind") or "Star Chart Goal")
+        _add_candidate({
+            "source_key": f"star-chart-goal:{g.get('id') or g_name.lower()[:40]}",
+            "source_kind": "star_chart_q2",
+            "title": g_name,
+            "summary": f"Star Chart ({g_role}) — candidate for The List",
+            "detail": f"Quadrant II deep-work goal '{g_name}' on Star Chart has no active item on The List yet.",
+            "category": "Research",
+            "priority": 2,
+            "cockpit_name": "Star Chart",
+            "cockpit_href": str(g.get("href") or "/campaign"),
+            "is_q2": True,
+            "base_score": 68.0,
+        })
+
+    # 4. Top #1/#2 uncompleted List items whose next step is ready to execute right now (only if pool has <3 new candidates)
+    if len(pool) < 3:
+        for rec in build_chief_of_staff_recommendations_from_the_list(st)[:4]:
+            ltid = str(rec.get("list_tile_id") or "")
+            _add_candidate({
+                "source_key": f"list-next-step:{ltid}:{rec.get('step_idx')}",
+                "source_kind": "cockpit_active",
+                "list_tile_id": ltid,
+                "proposal_op": "advance_tile",
+                "title": str(rec.get("raw_title") or rec.get("title") or ""),
+                "summary": f"On The List ({rec.get('ordinal_label')}) · Next: {rec.get('next_step_text')}",
+                "detail": str(rec.get("driver") or ""),
+                "plan_steps": [str(rec.get("next_step_text") or "Advance next step in cockpit")],
+                "category": str(rec.get("category") or "Business"),
+                "priority": int(rec.get("priority") or 2),
+                "cockpit_name": str(rec.get("open_label") or "AI Cockpit").replace("↗ Open ", ""),
+                "cockpit_href": str(rec.get("href") or "/steward/v1"),
+                "is_q2": int(rec.get("priority") or 2) >= 2,
+                "base_score": 64.0 - int(rec.get("priority") or 2),
+            })
+
+    pool.sort(key=lambda x: (-float(x.get("score") or 0.0), int(x.get("priority") or 2)))
+
+    # Premortem protection (`a-1`): ensure >=1 Quadrant II / active-cockpit deep-work candidate in top 3 when <3 urgent 24h blockers
+    top_three = pool[:3]
+    overflow = pool[3:]
+    if len(top_three) == 3 and not any(x.get("is_q2") for x in top_three):
+        if not all(x.get("is_urgent_24h") for x in top_three):
+            q2_idx = next((i for i, x in enumerate(overflow) if x.get("is_q2")), -1)
+            if q2_idx >= 0:
+                promoted_q2 = overflow.pop(q2_idx)
+                demoted = top_three.pop(2)
+                top_three.append(promoted_q2)
+                overflow.insert(0, demoted)
+
+    ordered_all = top_three + overflow
+    return {
+        "top_three": top_three,
+        "overflow": overflow,
+        "overflow_count": len(overflow),
+        "total_count": len(ordered_all),
+        "suggestions": ordered_all,
+    }
+
+
 def build_live_cockpits_and_goals_catalogs() -> dict:
     """Build live dropdown catalogs for The List:
     1) `cockpits_dropdown_catalog`: starts with Active AI Cockpits, then On Deck AI Cockpits, then Other Project Cockpits.
@@ -15296,6 +15925,7 @@ def _enrich_working_list_state(
         today=today,
     )
     data["cos_recommendations"] = build_chief_of_staff_recommendations_from_the_list(data)
+    data["cos_suggestions"] = build_chief_of_staff_suggestions(data)
     active_n = sum(1 for t in data["tiles"] if isinstance(t, dict) and not t.get("archived") and not t.get("done"))
     data["active_count"] = active_n
     if active_n == 0:
@@ -16200,6 +16830,184 @@ def mutate_working_list_spine(op_or_body, extra: dict | None = None) -> dict:
                         "message": state.get("message", ""),
                         "working_list": state,
                         "cos_recommendations": state.get("cos_recommendations") or [],
+                        "cos_suggestions": state.get("cos_suggestions") or build_chief_of_staff_suggestions(state),
+                    }
+
+                if op == "cos_act":
+                    cos_action = str(body.get("cos_action") or body.get("sub_act") or "").strip().lower()
+                    if cos_action not in ("act_now", "add_to_list", "postpone", "delete", "send_to_steward"):
+                        return _wave2_failure_dict("dependency-returns-garbage", detail=f"Invalid cos_action: {cos_action}")
+                    sug_id = str(body.get("suggestion_id") or body.get("id") or "").strip()
+                    src_key = str(body.get("source_key") or "").strip()
+                    directions = str(body.get("directions") or "").strip()
+                    defer_hours = float(body.get("defer_hours") or 18.0)
+
+                    cur_bundle = state.get("cos_suggestions") if isinstance(state.get("cos_suggestions"), dict) else build_chief_of_staff_suggestions(state)
+                    all_sugs = list(cur_bundle.get("suggestions") or [])
+                    matched_sug = next(
+                        (
+                            s for s in all_sugs
+                            if (sug_id and str(s.get("id") or "") == sug_id)
+                            or (src_key and str(s.get("source_key") or "") == src_key)
+                        ),
+                        None,
+                    )
+                    if matched_sug is None:
+                        matched_sug = {
+                            "id": sug_id or "cos-adhoc",
+                            "source_key": src_key or sug_id or f"cos-adhoc:{time.time_ns()}",
+                            "source_kind": str(body.get("source_kind") or "cockpit_active"),
+                            "proposal_id": str(body.get("proposal_id") or ""),
+                            "proposal_op": str(body.get("proposal_op") or "add_tile"),
+                            "list_tile_id": str(body.get("list_tile_id") or ""),
+                            "title": str(body.get("title") or "Suggested Effort").strip(),
+                            "summary": str(body.get("summary") or ""),
+                            "detail": str(body.get("detail") or ""),
+                            "plan_steps": list(body.get("plan_steps") or []),
+                            "background_skill": str(body.get("background_skill") or "Steward"),
+                            "category": str(body.get("category") or "Business"),
+                            "priority": _normalize_priority_number(body.get("priority"), default=2),
+                            "cockpit_name": str(body.get("cockpit_name") or "Cave of Wonders"),
+                            "cockpit_href": str(body.get("cockpit_href") or "/steward/v1"),
+                            "pid": str(body.get("pid") or ""),
+                            "effort_dir": str(body.get("effort_dir") or ""),
+                        }
+
+                    eff_sk = str(matched_sug.get("source_key") or "").strip()
+                    prop_id_linked = str(matched_sug.get("proposal_id") or "").strip()
+                    applied_tile = None
+                    steward_dispatched = False
+                    open_href = str(matched_sug.get("cockpit_href") or "/steward/v1")
+
+                    if cos_action == "add_to_list":
+                        if prop_id_linked:
+                            p_idx = next((i for i, p in enumerate(proposals) if str(p.get("id") or "") == prop_id_linked), -1)
+                            if p_idx >= 0:
+                                chosen_p = proposals.pop(p_idx)
+                                edits_p = {"notes": directions} if directions else {}
+                                if body.get("title"):
+                                    edits_p["title"] = str(body["title"]).strip()
+                                applied_tile = _apply_proposal_to_tiles(tiles, chosen_p, edits=edits_p)
+                        if applied_tile is None:
+                            t_title = str(body.get("title") or matched_sug.get("title") or "Suggested Effort").strip()
+                            t_cat = str(body.get("category") or matched_sug.get("category") or "Business").strip()
+                            t_prio = _normalize_priority_number(body.get("priority") or matched_sug.get("priority"), default=2)
+                            raw_steps = list(matched_sug.get("plan_steps") or [])
+                            if directions:
+                                raw_steps.insert(0, directions)
+                            if not raw_steps:
+                                raw_steps = [f"Complete next action for {t_title}"]
+                            new_tid = "tile-" + hashlib.sha1(f"{t_title}:{time.time_ns()}".encode("utf-8")).hexdigest()[:8]
+                            ck_nm = str(matched_sug.get("cockpit_name") or f"{t_title[:22]} Cockpit")
+                            built_steps = [
+                                {
+                                    "id": "st-" + hashlib.sha1(f"s{idx_s}:{new_tid}".encode("utf-8")).hexdigest()[:6],
+                                    "text": str(st_txt).strip(),
+                                    "done": False,
+                                    "cockpitItem": {"cockpitName": ck_nm, "itemLabel": f"Step {idx_s + 1}", "kind": "Step", "href": open_href},
+                                    "cockpitStatus": "⏳ Ready",
+                                    "cockpitUrl": open_href,
+                                    "initiativeItem": None,
+                                    "initiativeUrl": "",
+                                }
+                                for idx_s, st_txt in enumerate(raw_steps) if str(st_txt).strip()
+                            ]
+                            applied_tile = {
+                                "id": new_tid,
+                                "title": t_title,
+                                "category": t_cat,
+                                "priority": t_prio,
+                                "prio": str(t_prio),
+                                "due": str(matched_sug.get("due") or "")[:10],
+                                "cockpitPid": str(matched_sug.get("pid") or ""),
+                                "cockpitName": ck_nm,
+                                "cockpitUrl": open_href,
+                                "cockpitHref": open_href,
+                                "goalId": "",
+                                "goalName": "",
+                                "skills": [str(matched_sug.get("background_skill") or "researchPrime")],
+                                "expanded": False,
+                                "done": False,
+                                "archived": False,
+                                "brainstormNotes": directions or str(matched_sug.get("detail") or ""),
+                                "steps": built_steps,
+                            }
+                            tiles.insert(0, applied_tile)
+                        if eff_sk and eff_sk not in accepted_keys:
+                            accepted_keys.append(eff_sk)
+
+                    elif cos_action in ("act_now", "send_to_steward"):
+                        if prop_id_linked:
+                            proposals = [p for p in proposals if str(p.get("id") or "") != prop_id_linked]
+                        if eff_sk and eff_sk not in accepted_keys:
+                            accepted_keys.append(eff_sk)
+                        if directions or cos_action == "send_to_steward":
+                            plan_txt = "; ".join(f"{i+1}. {s}" for i, s in enumerate(matched_sug.get("plan_steps") or []))
+                            bg_sk = str(matched_sug.get("background_skill") or "Steward")
+                            msg_to_steward = (
+                                f"[Chief of Staff · {matched_sug.get('title')}] "
+                                + (f"User directions: {directions}\n" if directions else "")
+                                + (f"Proposed plan ({bg_sk}): {plan_txt}" if plan_txt else "")
+                            ).strip()
+                            try:
+                                from steward_cockpit import steward_engine as _se_cos
+                                target_cdir = ""
+                                t_pid = str(matched_sug.get("pid") or "").strip()
+                                t_edir = str(matched_sug.get("effort_dir") or "").strip()
+                                if t_pid:
+                                    import rnd_registry as _rnd_cos
+                                    p_ent = next((e for e in _rnd_cos.list_projects() if str(e.get("id") or "") == t_pid), None)
+                                    if p_ent and p_ent.get("folder_path"):
+                                        base_fp = Path(str(p_ent["folder_path"]))
+                                        target_cdir = str((base_fp / t_edir) if t_edir else base_fp)
+                                if not target_cdir or not Path(target_cdir).is_dir():
+                                    camp_fp = Path(paths.data_dir()).resolve().parent / "Campaign" / "Cave of Wonders"
+                                    if camp_fp.is_dir():
+                                        target_cdir = str(camp_fp)
+                                if target_cdir and not _is_hermetic():
+                                    eng_cos = _se_cos.get_engine(target_cdir)
+                                    eng_cos.enqueue(msg_to_steward)
+                                    steward_dispatched = True
+                            except Exception:
+                                steward_dispatched = False
+
+                    elif cos_action == "delete":
+                        if prop_id_linked:
+                            proposals = [p for p in proposals if str(p.get("id") or "") != prop_id_linked]
+                        if eff_sk and eff_sk not in dismissed_keys:
+                            dismissed_keys.append(eff_sk)
+
+                    elif cos_action == "postpone":
+                        pass  # Handled non-destructively by record_cos_suggestion_feedback below
+
+                    feedback_ledger = record_cos_suggestion_feedback(
+                        cos_action,
+                        matched_sug,
+                        directions=directions,
+                        defer_hours=defer_hours,
+                    )
+                    state["tiles"] = tiles
+                    state["proposals"] = proposals
+                    state["dismissed_proposal_keys"] = dismissed_keys
+                    state["accepted_proposal_keys"] = accepted_keys
+                    _enrich_working_list_state(state)
+                    paths.atomic_write_json(wl_p, state, lock_path=lock_p, timeout_sec=STORE_LOCK_TIMEOUT_SEC)
+                    _WORKING_LIST_SPINE_CACHE.clear()
+                    _invalidate_cached_json_file(wl_p)
+                    return {
+                        "ok": True,
+                        "status_code": 200,
+                        "cos_action": cos_action,
+                        "tile": applied_tile,
+                        "open_href": open_href,
+                        "steward_dispatched": steward_dispatched,
+                        "working_list": state,
+                        "cos_suggestions": state.get("cos_suggestions") or build_chief_of_staff_suggestions(state),
+                        "cos_recommendations": state.get("cos_recommendations") or [],
+                        "feedback_summary": {
+                            "category_weights": feedback_ledger.get("category_weights", {}),
+                            "source_weights": feedback_ledger.get("source_weights", {}),
+                        },
                     }
 
                 if op in ("list_proposals", "proposals"):

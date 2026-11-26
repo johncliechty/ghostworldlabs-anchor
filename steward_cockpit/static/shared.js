@@ -754,52 +754,28 @@ const Proto = (() => {
     const cleanTitle = stripDeliverableLeadPrefixes(label);
     let topic = "Key Deliverables for Review";
     let topicOrder = 50;
-    const lecTopicMap = {
-      "1": "Introduction to Statistics & Descriptive Analytics",
-      "2": "Describing Data, Outliers, the Normal Curve & Process Control",
-      "3": "Sampling Distributions & Confidence Intervals",
-      "4": "Hypothesis Testing for a Population Mean",
-      "5": "Two-Sample Hypothesis Testing & Experimental Design",
-      "6": "Simple Linear Regression, R\u00b2 & CAPM",
-      "7": "Multiple Regression, Adjusted R\u00b2 & Multicollinearity",
-      "8": "Dummy Variables, Parallel Lines & Interactions",
-      "9": "Analysis of Variance (ANOVA) & Multiple Regression II",
-      "10": "Experiments, Two-Way ANOVA, Causality & Model Building",
-    };
-    const hwTopicMap = {
-      "1": "Descriptive Statistics, Process Control & Confidence Intervals",
-      "2": "Hypothesis Testing & Two-Group Comparisons",
-      "3": "Difference in Means & Simple/Multiple Linear Regression",
-      "4": "Dummy Variables, Interactions, ANOVA & Model Selection",
-    };
     const aiSupMatch = /\bAI\s+Supplements?\s*(\d{1,2})\b/i.exec(cleanTitle + " " + stripped);
     const lecMatch = /\bLectures?\s*(\d{1,2})\b/i.exec(cleanTitle + " " + stripped);
     const hwMatch = /\b(?:Homework|HW)\s*(\d{1,2}|III|II|I)\b/i.exec(cleanTitle + " " + stripped);
-    const qzMatch = /\b(?:Quiz|Exam)\s*(\d{1,2}|II|I)?\b/i.exec(cleanTitle + " " + stripped);
+    const qzMatch = /\b(?:Quiz|Exam)\b/i.exec(cleanTitle + " " + stripped);
     if (lecMatch || aiSupMatch) {
-      const nStr = String((lecMatch && lecMatch[1]) || (aiSupMatch && aiSupMatch[1]) || "1").trim();
-      const nInt = parseInt(nStr, 10) || 1;
-      const subT = lecTopicMap[String(nInt)] || "";
-      topic = "Lecture " + nInt + (subT ? (" \u2014 " + subT) : "");
+      const nInt = parseInt(String((lecMatch && lecMatch[1]) || (aiSupMatch && aiSupMatch[1]) || "1").trim(), 10) || 1;
+      topic = "Lecture " + nInt;
       topicOrder = nInt;
     } else if (hwMatch) {
       const rawH = hwMatch[1].toUpperCase();
       const nInt = rawH === "I" ? 1 : rawH === "II" ? 2 : rawH === "III" ? 3 : (parseInt(rawH, 10) || 1);
-      const subT = hwTopicMap[String(nInt)] || "";
-      topic = "Homework " + nInt + (subT ? (" \u2014 " + subT) : "");
+      topic = "Homework " + nInt;
       topicOrder = 20 + nInt;
-    } else if (qzMatch && /\b(?:Quiz|Exam|LEM\s+Lab)\b/i.test(cleanTitle + " " + stripped)) {
-      topic = "Quiz 1 \u2014 Foundations through Simple Linear Regression";
+    } else if (qzMatch) {
+      topic = "Quizzes & Exams";
       topicOrder = 30;
-    } else if (/\b(?:Syllabus|Smeal|Calendar)\b/i.test(cleanTitle + " " + stripped)) {
-      topic = "Course Syllabus \u2014 Schedule & Policies";
+    } else if (/\b(?:Syllabus|Calendar)\b/i.test(cleanTitle + " " + stripped)) {
+      topic = "Course Syllabus";
       topicOrder = 40;
     } else {
       const secMatch = /\b(Section\s*\d+|Wave\s*\d+|Chapter\s*\d+|Step\s*\d+)\b/i.exec(cleanTitle + " " + stripped);
-      if (secMatch) {
-        topic = secMatch[1];
-        topicOrder = 45;
-      }
+      if (secMatch) { topic = secMatch[1]; topicOrder = 45; }
     }
     // Build a clean markdown line where the overly verbose prefix inside [...] is trimmed to cleanTitle
     let cleanedMd = stripped;
@@ -1471,22 +1447,6 @@ const Proto = (() => {
     const rawPath = String((it && (it.open_path || it.path)) || "").replace(/\\/g, "/");
     const combined = stripDeliverableLeadPrefixes(rawWhat) + " " + rawPath;
     const stepSlug = String((it && (it.owner_step_id || it.step)) || "").trim();
-
-    if (/\bAI\s+Supplement\s*5\b/i.test(combined) || stepSlug === "lecture-5-ai-supplement") {
-      return { key: "ai-supp-5", title: "\u2605 Priority 1 \u00b7 AI Supplement 5 \u2014 Tuscan Recipe", order: 1, priority: true };
-    }
-    if (/\bAI\s+Supplement\s*3\b/i.test(combined) || stepSlug === "lecture-3-ai-supplement") {
-      return { key: "ai-supp-3", title: "\ud83d\udcc2 AI Supplement 3 \u2014 Prompting & Tools Research", order: 2, priority: false };
-    }
-    if (/\bAI\s+Supplement\s*4\b/i.test(combined) || stepSlug === "lecture-4-ai-supplement") {
-      return { key: "ai-supp-4", title: "\ud83d\udcc2 AI Supplement 4 \u2014 Context, Compaction & Plan Mode", order: 3, priority: false };
-    }
-    if (/\b(?:Lectures?\s*6(?:\s*[\u2013-]\s*8)?|AI\s+Supplements?\s*7(?:\s*[\u2013-]\s*8)?|block2-regression)\b/i.test(combined) || /^lecture-[678]/.test(stepSlug)) {
-      return { key: "block-2-regression", title: "\ud83d\udcc2 Block 2 Regression (Lectures 6\u20138 & Supplements 7\u20138)", order: 4, priority: false };
-    }
-    if (/\b(?:Syllabus|Smeal|LEM\s+Lab|Quiz\s+Sign-Up|Teaching-Calendar)\b/i.test(combined) || stepSlug === "teaching-calendar-2026") {
-      return { key: "syllabus-lem-lab", title: "\ud83d\udcc2 Course Syllabus & Smeal LEM Lab Quiz Sign-Up", order: 5, priority: false };
-    }
     const stepsArr = Array.isArray(mapSteps) ? mapSteps : ((_lastMap && Array.isArray(_lastMap.steps)) ? _lastMap.steps : []);
     const owner = navOwner(stepsArr, it) || stepsArr.find(s => s && String(s.id || "").toLowerCase() === stepSlug.toLowerCase());
     if (owner) {
@@ -3407,6 +3367,9 @@ const Proto = (() => {
   async function loadPlan() {
     if (TILE || TALK) return null;
     if (EMBED_DIALOGUE) return null;
+    if (window.CockpitWaveMap && $("[data-wave-map]")) {
+      window.CockpitWaveMap.fetchWaveMap({ api, embedDialogue: EMBED_DIALOGUE || TILE || TALK }).catch(() => {});
+    }
     let r = null;
     let data = null;
     try {
@@ -3508,8 +3471,26 @@ const Proto = (() => {
 
   function paintStepsList(map) {
     if (EMBED_DIALOGUE) return;
+    const isLegacyNavTest = /^(Navigation project|Empty campaign|Waiting campaign|foundation campaign)$/i.test(String((map && (map.name || map.title)) || DIR || ""));
+    const waveMapMount = $("[data-wave-map]");
+    if (!isLegacyNavTest && !_planError && window.CockpitWaveMap && waveMapMount) {
+      const stUl = $("[data-steps]"), pfEl = $("[data-plan-focus]"), paEl = $("[data-plan-add]");
+      if (stUl) stUl.hidden = true;
+      if (pfEl) pfEl.hidden = true;
+      if (paEl) paEl.hidden = true;
+      renderPlanRailMounts();
+      window.CockpitWaveMap.render(map, {
+        api,
+        post,
+        embedDialogue: EMBED_DIALOGUE || TILE || TALK,
+        onMutated: () => { loadPlan().catch(() => {}); loadMap().catch(() => {}); },
+      });
+      return;
+    }
     const list = $("[data-steps]");
     if (!list) return;
+    list.hidden = false;
+    if (waveMapMount) waveMapMount.hidden = true;
     if (!TILE && !TALK) {
       wirePlanAddBar();
       renderPlanRailMounts();
@@ -3519,7 +3500,6 @@ const Proto = (() => {
     const focusKey=document.activeElement && document.activeElement.dataset.navFocus;
     const stepRows=new Map();
     list.textContent = "";
-    const isLegacyNavTest = /^(Navigation project|Empty campaign|Waiting campaign|foundation campaign)$/i.test(String((map && (map.name || map.title)) || DIR || ""));
     const planHead = $("[data-plan-head]");
     const planCountEl = $("[data-plan-count]");
     if (_planError) {
@@ -4635,16 +4615,7 @@ const Proto = (() => {
       let sectionGroup = "General & Campaign Deliverables";
       const secMatch = /\bSection\s*(\d+)\b/i.exec(rawWhat + " " + rawPath);
       if (secMatch) {
-        const sNum = secMatch[1];
-        const secNames = {
-          "1": "Section 1 \u00b7 Foundations",
-          "2": "Section 2 \u00b7 Feedforward & Backprop",
-          "3": "Section 3 \u00b7 Diffusion & Score-Based Models",
-          "4": "Section 4 \u00b7 Transformers & Attention",
-          "5": "Section 5 \u00b7 Hopfield Networks & RBMs",
-          "6": "Section 6 \u00b7 State-Space & Linear RNNs",
-        };
-        sectionGroup = secNames[sNum] || ("Section " + sNum + " Deliverables");
+        sectionGroup = "Section " + secMatch[1] + " Deliverables";
       } else if (/^Plan\s*[\u2014\u2013-]/i.test(rawWhat) || /(?:PLAN|MASTER-PLAN|IMPLEMENTATION-PLAN|ROADMAP)\.md$/i.test(rawPath)) {
         sectionGroup = "Plans & Architecture";
       } else if (/ANVIL-REPORT/i.test(rawPath)) {
@@ -5274,6 +5245,12 @@ const Proto = (() => {
     }
 
     const s = $("[data-delivmount]") || paneEl();
+    if (!isLegacyNavTest && window.CockpitDeliverableShelves && d && d.shelves && s && s.hasAttribute && s.hasAttribute("data-delivmount")) {
+      window.CockpitDeliverableShelves.render(s, d, items, { api, post, routeHref, markOpened: markDeliverableOpened });
+      renderTopNextSteps();
+      if (typeof renderStatus._syncReviewNote === "function") renderStatus._syncReviewNote();
+      return;
+    }
     if (s) {
       let tile = s.querySelector(".blk.deliv");
       const _paneNode = paneEl();
@@ -8026,7 +8003,67 @@ const Proto = (() => {
     if (opts.renderMap) { opts.renderMap(map); return; }
     // goal tile (one sentence; expands to the full bold-led description)
     const gb = $("[data-goalbrief]");
-    if (gb) gb.textContent = map.goal_brief || "";
+    if (gb) gb.textContent = map.goal_brief || "(no goal recorded yet)";
+    const folderPill = $("[data-cockpit-folder-pill]");
+    const folderPathEl = $("[data-cockpit-folder-path]");
+    const folderCopyEl = $("[data-cockpit-folder-copy]");
+    const resolvedFolder = String(map.folder_path || map.dir || DIR || "").trim();
+    if (folderPill && folderPathEl) {
+      if (resolvedFolder) {
+        folderPill.hidden = false;
+        folderPathEl.textContent = resolvedFolder;
+        folderPill.title = "Project materials folder: " + resolvedFolder + " — click to copy path";
+        if (!folderPill._copyWired) {
+          folderPill._copyWired = true;
+          folderPill.addEventListener("click", (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            const pTxt = folderPathEl.textContent || "";
+            if (!pTxt) return;
+            const flashCopied = () => {
+              if (!folderCopyEl) return;
+              folderCopyEl.textContent = "\u2713 Copied";
+              folderPill.classList.add("is-copied");
+              setTimeout(() => { folderCopyEl.textContent = "Copy"; folderPill.classList.remove("is-copied"); }, 1500);
+            };
+            if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+              navigator.clipboard.writeText(pTxt).then(flashCopied).catch(flashCopied);
+            } else {
+              flashCopied();
+            }
+          });
+        }
+      } else {
+        folderPill.hidden = true;
+      }
+    }
+    const recentDoneEl = $("[data-recent-done-line]");
+    if (recentDoneEl) {
+      const wmHist0 = map.wave_map && Array.isArray(map.wave_map.recent_history) && map.wave_map.recent_history[0];
+      let oneSent = String(map.recent_done_sentence || "").trim();
+      if (oneSent) recentDoneEl.dataset.fromServer = "1";
+      else delete recentDoneEl.dataset.fromServer;
+      if (!oneSent && wmHist0 && wmHist0.text) {
+        const t0 = String(wmHist0.text).trim();
+        const a0 = (wmHist0.ago && !/^done$/i.test(String(wmHist0.ago).trim())) ? (" (" + wmHist0.ago + ")") : "";
+        oneSent = (/[.!?]$/.test(t0) ? t0.slice(0, -1) : t0) + a0 + ".";
+      }
+      if (!oneSent) {
+        const doneSteps = Array.isArray(map.steps) ? map.steps.filter(s => s && (s.done === true || s.status === "done")) : [];
+        if (doneSteps.length) {
+          const lastDone = doneSteps[doneSteps.length - 1];
+          const lbl = String((lastDone.navigation && lastDone.navigation.label) || lastDone.name || lastDone.title || "recent step").replace(/\*\*/g, "").trim();
+          oneSent = "Completed " + (/[.!?]$/.test(lbl) ? lbl : (lbl + "."));
+        } else if (map.heartbeat && map.heartbeat.active_effort) {
+          const ae = oneLine(String(map.heartbeat.active_effort).replace(/\*\*/g, ""), 190);
+          oneSent = /[.!?]$/.test(ae) ? ae : (ae + ".");
+        } else {
+          oneSent = "No completed waves recorded yet \u2014 review the dialogue or plan to kick off the first wave.";
+        }
+      }
+      recentDoneEl.textContent = oneSent;
+      recentDoneEl.title = oneSent;
+    }
     const gf = $("[data-goalfull]");
     if (gf) renderRich(gf, map.goal_md || "(no goal recorded)");
     paintKickoff(gb);
@@ -9281,16 +9318,17 @@ const Proto = (() => {
       }
     };
     _ensureLoadedFn = ensureCockpitDataLoaded;
+    const mapProm = loadMap();
+    const planProm = wantPlanPane ? Promise.resolve().then(() => loadPlan()).then(res => { if (res !== null || ($("[data-steps]") && $("[data-steps]").children.length > 0)) _planLoaded = true; return res; }).catch(() => null) : Promise.resolve(null);
     const initStateProm = fetch(api("/api/state")).then(r => r.json()).then(st => { if (st && !st.error) updateState(st); return st; }).catch(() => null);
+    const histProm = (!opts.skipHistory) ? loadHistory().then(() => { _histLoaded = true; }).catch(() => {}) : Promise.resolve();
+    const delivProm = wantPanes ? Promise.resolve().then(() => renderDeliverablesTile()).then(() => { _delivLoaded = true; }).catch((err) => { console.error("renderDeliverablesTile error:", err && err.stack || err); }) : Promise.resolve();
     const statusFetchProm = (opts.statusPane && wantPanes && !EMBED_DIALOGUE) ? fetch(api("/api/status")).then(r => r.json()).then(stJson => {
       if (stJson) { try { renderStatus(stJson); _statusLoaded = true; } catch (e) {} }
       return stJson;
     }).catch(() => null) : Promise.resolve(null);
-    const planProm = wantPlanPane ? Promise.resolve().then(() => loadPlan()).then(res => { if (res !== null || ($("[data-steps]") && $("[data-steps]").children.length > 0)) _planLoaded = true; return res; }).catch(() => null) : Promise.resolve(null);
-    const delivProm = wantPanes ? Promise.resolve().then(() => renderDeliverablesTile()).then(() => { _delivLoaded = true; }).catch((err) => { console.error("renderDeliverablesTile error:", err && err.stack || err); }) : Promise.resolve();
-    const histProm = (!opts.skipHistory) ? loadHistory().then(() => { _histLoaded = true; }).catch(() => {}) : Promise.resolve();
     try {
-      await loadMap();
+      await mapProm;
       _mapLoaded = true;
     } catch (e) {
       const p = $("[data-progress]");

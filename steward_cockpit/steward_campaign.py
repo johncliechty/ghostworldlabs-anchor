@@ -317,6 +317,9 @@ def _read_refinement_uncached(campaign_dir: str):
 
 def refinement_items(campaign_dir, state):
     """Opening metadata from the verified event fold; no Python lifecycle fold."""
+    if campaign_dir and isinstance(state, dict):
+        from . import deliverable_shelves as _ds
+        _ds.remember_refinement_state(campaign_dir, state)
     return _core.fold_refinement_items(campaign_dir, state)
 
 
@@ -6441,6 +6444,7 @@ def read_deliverables(campaign_dir: str):
                 "supporting_files": [],
                 "supporting_drawer": {"title": "Supporting & Earlier Files", "collapsed": True, "count": 0, "files": []},
             },
+            "shelves": {"most_recent_batches": [], "most_recent_summary": {"batch_count": 0, "file_count": 0}, "final": [], "final_items": [], "earlier": [], "earlier_items": []},
         }
     try:
         map_ = read_map(campaign_dir, include_plan_history=False, include_overview=False)
@@ -6594,6 +6598,13 @@ def read_deliverables(campaign_dir: str):
         deliv_hierarchy = build_deliverable_hierarchy(campaign_dir, decorated, approved, steps)
     except Exception:
         deliv_hierarchy = {"is_course": False, "executive_summary": {}, "categories": []}
+    try:
+        from . import deliverable_shelves as _ds
+        _ref_state = ((map_ or {}).get("refinement") or {}).get("state") if isinstance((map_ or {}).get("refinement"), dict) else None
+        shelves = _ds.compute_shelves_for_campaign(campaign_dir, decorated, approved=approved, refinement_state=_ref_state)
+        deliv_hierarchy = _ds.enrich_hierarchy_with_curation(deliv_hierarchy, _ds.read_batches_doc(campaign_dir), shelves.get("final") or [])
+    except Exception:
+        shelves = {"most_recent_batches": [], "most_recent_summary": {"batch_count": 0, "file_count": 0}, "final": [], "final_items": [], "earlier": [], "earlier_items": []}
     out = {
         **result,
         "ok": True,
@@ -6605,6 +6616,7 @@ def read_deliverables(campaign_dir: str):
         "current_warning": focus_warn,
         "current_summary": current_summary,
         "deliverable_hierarchy": deliv_hierarchy,
+        "shelves": shelves,
     }
     if "approved" in result:
         out["approved"] = approved
@@ -6768,6 +6780,7 @@ def map_stamp(campaign_dir: str):
     for rel in ("ECGBERHT.md", "roadmap.json", "strip.json", "DELIVERABLES.md", "plan-proposal.json",
                 ".ecgberht/attention.json", ".ecgberht/dismissed-deliverables.json",
                 ".ecgberht/plan-proposal.json", ".ecgberht/plan-history.json",
+                ".ecgberht/wave-state.json", ".ecgberht/deliverable-batches.json",
                 ".ecgberht/code-jobs.json", ".ecgberht/skill-jobs.json"):
         try:
             stamp.append((root / rel).stat().st_mtime_ns)
@@ -7432,16 +7445,6 @@ def read_plan_history(campaign_dir: str, m: dict | None = None, roadmap: dict | 
 
     docs = _plan_docs(root)
     primary_plan_doc = docs[0].name if docs else ""
-
-    # Seed .ecgberht/plan-history.json automatically if absent and live_steps exist
-    if live_steps and not hist_path.is_file():
-        _record_plan_history_snapshot(
-            campaign_dir,
-            live_steps,
-            label=f"{today_str} · Live Plan ({live_done}/{live_total} done)",
-            summary=f"Active campaign plan ({live_done} of {live_total} steps done).",
-            trigger="live",
-        )
 
     saved_entries = []
     if hist_path.is_file():

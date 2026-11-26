@@ -123,15 +123,22 @@
     }
     return summaries;
   }
+  const SUMMARIES_CACHE_KEY = 'anchor_cave_summaries_cache_v2';
   try {
+    localStorage.removeItem('anchor_cave_summaries_cache');
     const bootBox = ensureSummariesBox();
-    const cachedHtml = localStorage.getItem('anchor_cave_summaries_cache');
+    const cachedHtml = localStorage.getItem(SUMMARIES_CACHE_KEY);
     if (cachedHtml) {
       bootBox.innerHTML = cachedHtml;
     } else {
       bootBox.innerHTML = '<div class="engine-rail-header"><span class="engine-rail-title">Subscriptions &amp; Frontier</span><span class="engine-rail-gear">Setup →</span></div>'
-        + ['Claude','ChatGPT','Gemini','Grok'].map(n => '<div class="cave-account-summary is-ready"><div class="ec-top"><span class="ec-dot active"></span><strong class="ec-name">'+n+' ★</strong><span class="ec-mode">Sub</span></div></div>').join('');
+        + ['Claude','ChatGPT','Gemini','Grok'].map(n => '<div class="cave-account-summary" data-provider-family="'+n.toLowerCase()+'"><div class="ec-top"><span class="ec-dot"></span><strong class="ec-name">'+n+'</strong><span class="ec-mode is-idle">Checking</span></div></div>').join('');
     }
+    bootBox.addEventListener('click', e => {
+      if (data) return;
+      const b = e.target.closest('.cave-usage-banner'); if (b) { open(b, {section:'providers'}); return; }
+      const s = e.target.closest('.cave-account-summary[data-provider-family]'); if (s) open(s, {section:'provider-detail', family:s.dataset.providerFamily});
+    });
   } catch (_) {}
   function paint(value){
     if(data && value.settings_revision < data.settings_revision)return;
@@ -174,9 +181,16 @@
       const svc = svcByFamily[connection.family] || {};
       const isDefaultSub = Boolean(connection.native_default && connection.mode==='subscription');
       const isFallback = Boolean(svc.fallback_active);
-      const isSignedOut = connection.auth === 'signed_out' && !isFallback;
-      const isReady = !isSignedOut && Boolean((connection.execution && connection.execution.ready) || svc.signed_in_or_ready || (isDefaultSub && mon.connected));
-      row.className='cave-account-summary'+(isSelected?' is-selected':'')+(isReady?' is-ready':'')+(isFallback?' is-fallback':'');
+      const hasSvc = Object.keys(svc).length > 0;
+      const explicitUnready = connection.test === 'failed' || connection.auth === 'signed_out' || connection.auth === 'expired' || connection.auth === 'unsupported' || connection.auth === 'unavailable';
+      const isReady = !explicitUnready && !isFallback && Boolean(
+        (connection.execution && connection.execution.ready) ||
+        svc.effective_ready ||
+        svc.signed_in_or_ready ||
+        (!hasSvc && connection.auth === 'signed_in')
+      );
+      const isDisconnected = !isReady && !isFallback;
+      row.className='cave-account-summary'+(isSelected?' is-selected':'')+(isReady?' is-ready':'')+(isFallback?' is-fallback':'')+(isDisconnected?' is-error':'');
       row.dataset.accountId=connection.id;
       row.dataset.providerFamily=connection.family;
       const defaultFrontierMap = {claude:'claude-fable-5-2 · max',chatgpt:'gpt-6-luna · ultra',gemini:'gemini-4-neon · high',grok:'grok-4.7 · xhigh'};
@@ -187,19 +201,21 @@
       const fam30 = w30 && w30.by_family && w30.by_family[connection.family];
       const spend7Text = fam7 ? '~' + fmtUsd(fam7.hypothetical_usd) : '';
       const spend30Text = (fam7 || fam30) ? ' · 30d: ~' + fmtUsd(fam30 && fam30.hypothetical_usd) + ' (' + fmtTokens(fam30 ? fam30.total_tokens : 0) + ' tok)' : '';
-      const modeBadge = connection.mode==='api' ? 'API' : (isFallback ? 'via agy' : (connection.auth === 'signed_in' ? 'Signed in' : (connection.auth === 'signed_out' ? 'Sign in' : 'Sub')));
+      const modeBadge = isDisconnected
+        ? (connection.auth === 'signed_out' ? 'Sign in' : (connection.auth === 'expired' ? 'Expired' : 'Disconnected'))
+        : (connection.mode==='api' ? 'API' : (isFallback ? 'via agy' : (connection.auth === 'signed_in' ? 'Signed in' : 'Sub')));
 
       let pctVal = null;
-      if(connection.allowance && connection.allowance.windows && connection.allowance.windows.length){
+      if(isReady && connection.allowance && connection.allowance.windows && connection.allowance.windows.length){
         pctVal = Math.max(0,Math.min(100,Math.round(Number(connection.allowance.windows[0].remaining_percent||0))));
-      } else if(isDefaultSub && typeof mon.remaining_percent === 'number'){
+      } else if(isReady && isDefaultSub && typeof mon.remaining_percent === 'number'){
         pctVal = Math.max(0,Math.min(100,Math.round(Number(mon.remaining_percent))));
       }
 
       const topRow=document.createElement('div');
       topRow.className='ec-top';
       const dot=document.createElement('span');
-      dot.className='ec-dot '+(isFallback ? 'warn' : (isReady ? 'active' : 'idle'));
+      dot.className='ec-dot '+(isFallback ? 'warn' : (isReady ? 'active' : 'error'));
       const heading=document.createElement('strong');
       heading.className='ec-name';
       const customNick = connection.name && connection.name !== 'Primary' && connection.name !== 'Existing native sign-in' && !connection.native_default;
@@ -218,11 +234,11 @@
         topRow.append(roleTag);
       }
       const badge=document.createElement('span');
-      badge.className='ec-mode'+(isFallback ? ' is-warn' : '');
+      badge.className='ec-mode'+(isFallback ? ' is-warn' : (isDisconnected ? ' is-error' : ''));
       badge.textContent=modeBadge;
       topRow.append(badge);
 
-      const rightTag = (isDefaultSub && mon.short_allowance) ? mon.short_allowance : (pctVal !== null ? (pctVal + '% left') : spend7Text);
+      const rightTag = isDisconnected ? '' : ((isDefaultSub && mon.short_allowance) ? mon.short_allowance : (pctVal !== null ? (pctVal + '% left') : spend7Text));
       if(rightTag){
         const sp=document.createElement('span');
         sp.className='ec-spend'+(pctVal !== null && pctVal <= 20 ? ' is-low' : '');
@@ -231,17 +247,21 @@
       }
 
       const shortDate = s => String(s || '').replace(/^[A-Za-z]{3}\s+/, '');
-      const resetSuffix = (isDefaultSub && mon.reset_7d_text && mon.reset_5h_text)
-        ? (' · rst ' + shortDate(mon.reset_5h_text) + ' / 7d ' + shortDate(mon.reset_7d_text).replace(/\s+\d{2}:\d{2}$/, ''))
-        : (isDefaultSub && mon.primary_reset_text)
-          ? (' · resets ' + shortDate(mon.primary_reset_text))
-          : (spend7Text ? (' · 7d ' + spend7Text) : '');
+      const resetSuffix = isDisconnected
+        ? ''
+        : ((isDefaultSub && mon.reset_7d_text && mon.reset_5h_text)
+            ? (' · rst ' + shortDate(mon.reset_5h_text) + ' / 7d ' + shortDate(mon.reset_7d_text).replace(/\s+\d{2}:\d{2}$/, ''))
+            : (isDefaultSub && mon.primary_reset_text)
+              ? (' · resets ' + shortDate(mon.primary_reset_text))
+              : (spend7Text ? (' · 7d ' + spend7Text) : ''));
       const cleanPref = prefModel === 'best' ? 'claude-fable-5-2' : prefModel;
-      const modelTxt = isFallback
-        ? 'Opus 5.5 · high (sign in CLI → Fable 5.2)'
-        : ((!cleanPref || cleanPref==='latest_supported')
-            ? (fModel || 'Current frontier')
-            : (cleanPref + (qChoice && qChoice.effort && qChoice.effort !== 'highest_supported' ? ' · ' + qChoice.effort : '') + (fModel && fModel.indexOf(cleanPref) === -1 ? ' ('+fModel+')' : '')));
+      const modelTxt = isDisconnected
+        ? 'Not connected · click to sign in or configure'
+        : (isFallback
+            ? 'Opus 5.5 · high (sign in CLI → Fable 5.2)'
+            : ((!cleanPref || cleanPref==='latest_supported')
+                ? (fModel || 'Current frontier')
+                : (cleanPref + (qChoice && qChoice.effort && qChoice.effort !== 'highest_supported' ? ' · ' + qChoice.effort : '') + (fModel && fModel.indexOf(cleanPref) === -1 ? ' ('+fModel+')' : ''))));
       const frontierLine=document.createElement('div');
       frontierLine.className='ec-frontier';
       frontierLine.textContent=modelTxt + resetSuffix;
@@ -268,21 +288,27 @@
       details.textContent=capacityText(connection)+monBasis+' · '+(connection.anchor_observed.tokens===null?'observed usage unknown':connection.anchor_observed.tokens.toLocaleString()+' observed tokens · '+connection.anchor_observed.state)+spend30Text+(connection.mode==='api'?' · API cost '+connection.api_spend.state:'');
       row.append(details);
 
-      row.onclick=e=>open(e.currentTarget,{section:'providers',family:connection.family});
+      row.onclick=e=>open(e.currentTarget,{section:'provider-detail',family:connection.family});
       summaries.append(row);
     });
     const commsList = Array.isArray(svcInfo.comms_accounts) ? svcInfo.comms_accounts : [];
     if (commsList.length) {
+      const okComms = commsList.filter(a => a && a.has_credentials !== false && !['auth_error','paused_safety','error','disconnected'].includes(String(a.status || '').toLowerCase()));
+      const allBad = okComms.length === 0;
+      const someBad = !allBad && okComms.length < commsList.length;
       const commsRow = document.createElement('div');
-      commsRow.className = 'cave-account-summary is-ready cave-comms-summary';
+      commsRow.className = 'cave-account-summary cave-comms-summary' + (allBad ? ' is-error' : (someBad ? ' is-fallback' : ' is-ready'));
       commsRow.title = 'Connected Email & Calendar accounts — click to view or manage in Setup';
       const labelsTxt = commsList.map(a => a.label || a.family).slice(0, 4).join(' · ');
-      commsRow.innerHTML = '<div class="ec-top"><span class="ec-dot active"></span><strong class="ec-name">Email &amp; Calendar (' + commsList.length + ')</strong><span class="ec-mode">Synced</span></div>'
+      const cDot = allBad ? 'error' : (someBad ? 'warn' : 'active');
+      const cModeCls = allBad ? ' is-error' : (someBad ? ' is-warn' : '');
+      const cModeTxt = allBad ? 'Offline' : (someBad ? (okComms.length + '/' + commsList.length + ' Ready') : 'Synced');
+      commsRow.innerHTML = '<div class="ec-top"><span class="ec-dot ' + cDot + '"></span><strong class="ec-name">Email &amp; Calendar (' + commsList.length + ')</strong><span class="ec-mode' + cModeCls + '">' + cModeTxt + '</span></div>'
         + '<div class="ec-frontier">' + labelsTxt.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>';
       commsRow.onclick = e => open(e.currentTarget,{section:'comms'});
       summaries.append(commsRow);
     }
-    try { localStorage.setItem('anchor_cave_summaries_cache', summaries.innerHTML); } catch (_) {}
+    try { localStorage.setItem(SUMMARIES_CACHE_KEY, summaries.innerHTML); } catch (_) {}
   }
   let autoRefreshedCold = false;
   async function load(){

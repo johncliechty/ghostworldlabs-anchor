@@ -774,3 +774,19 @@ def test_shell_overlay_never_downgrades_newer_repo_or_clobbers_same_version_patc
     assert (dest / "new_helper.py").read_text(encoding="utf-8") == "# added file\n"
     log_txt2 = (dest / "logs" / "overlay.log").read_text(encoding="utf-8")
     assert "preserved_local=1" in log_txt2
+
+
+def test_session0_and_offscreen_desktop_browser_guard():
+    import paths
+
+    # Session 0 Windows Service -> never interactive, always flagged as Session 0
+    assert paths.is_windows_service_or_session0(_probe_fn=lambda: (0, "Service-0x0-3e7$", "Default")) is True
+    assert paths.is_interactive_desktop_session(_probe_fn=lambda: (0, "Service-0x0-3e7$", "Default")) is False
+
+    # Session 1 offscreen sandbox desktop (exebox-*) -> not Session 0, but not interactive Default desktop
+    assert paths.is_windows_service_or_session0(_probe_fn=lambda: (1, "WinSta0", "exebox-TEST")) is False
+    assert paths.is_interactive_desktop_session(_probe_fn=lambda: (1, "WinSta0", "exebox-TEST")) is False
+
+    # Session 1 real interactive user desktop (WinSta0\Default) -> interactive!
+    assert paths.is_windows_service_or_session0(_probe_fn=lambda: (1, "WinSta0", "Default")) is False
+    assert paths.is_interactive_desktop_session(_probe_fn=lambda: (1, "WinSta0", "Default")) is True

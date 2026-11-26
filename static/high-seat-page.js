@@ -204,12 +204,18 @@
       + '<button type="button" class="mini ct-undo" id="caveToastUndo" hidden>undo</button>'
       + '<button type="button" class="ct-close" id="caveToastClose" aria-label="Dismiss">\u00d7</button>';
     document.body.appendChild(el);
-    el.querySelector('#caveToastUndo').addEventListener('click', function () {
-      var u = $('#undoBtn'); if (u && !u.disabled) u.click();
-    });
-    el.querySelector('#caveToastClose').addEventListener('click', function () {
-      el.hidden = true; if (_toastTimer) { clearTimeout(_toastTimer); _toastTimer = null; }
-    });
+    var uBtn = el.querySelector('#caveToastUndo');
+    if (uBtn) {
+      uBtn.addEventListener('click', function () {
+        var u = $('#undoBtn'); if (u && !u.disabled) u.click();
+      });
+    }
+    var cBtn = el.querySelector('#caveToastClose');
+    if (cBtn) {
+      cBtn.addEventListener('click', function () {
+        el.hidden = true; if (_toastTimer) { clearTimeout(_toastTimer); _toastTimer = null; }
+      });
+    }
     return el;
   }
   function receipt(text, bad, undo) {
@@ -221,9 +227,12 @@
     }
     var toast = ensureCaveToast();
     if (toast && text) {
-      toast.querySelector('#caveToastText').textContent = text;
-      toast.querySelector('.ct-mark').textContent = bad ? '\u26a0' : '\u2713';
-      toast.querySelector('#caveToastUndo').hidden = !undo;
+      var tt = toast.querySelector('#caveToastText');
+      var tm = toast.querySelector('.ct-mark');
+      var tu = toast.querySelector('#caveToastUndo');
+      if (tt) tt.textContent = text;
+      if (tm) tm.textContent = bad ? '\u26a0' : '\u2713';
+      if (tu) tu.hidden = !undo;
       toast.classList.toggle('bad', !!bad);
       toast.hidden = false;
       if (_toastTimer) clearTimeout(_toastTimer);
@@ -309,9 +318,33 @@
     var toggleBodyBtn = e.target.closest && e.target.closest('[data-cos-toggle-body]');
     if (toggleBodyBtn && !e.target.closest('a')) {
       e.preventDefault();
-      var dToday = document.getElementById('hzDrawer-today');
-      var nowOpen = dToday ? dToday.hidden : true;
-      _setCosBodyExpanded(nowOpen, nowOpen ? 'today' : '');
+      _setCosBodyExpanded(!_cosIsOpen);
+      return;
+    }
+
+    var cosOpenCommsBtn = e.target.closest && e.target.closest('[data-cos-open-comms]');
+    if (cosOpenCommsBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      var wantKind = cosOpenCommsBtn.getAttribute('data-cos-open-comms') || 'email';
+      var calEl = document.getElementById('cal');
+      var calTogEl = document.getElementById('calTog');
+      $$('#railNav button').forEach(function (x) {
+        x.classList.toggle('on', x.getAttribute('data-rail') === wantKind);
+      });
+      if (calEl) {
+        calEl.classList.add('open');
+        if (calTogEl) calTogEl.textContent = 'Collapse';
+        setCalTab(wantKind === 'email' ? 'mail' : 'cal');
+        var cmEl = document.getElementById('caveCommsConnectModal');
+        if (cmEl && calEl.getAttribute('data-connected-count') === '0') {
+          cmEl.hidden = false;
+        }
+        if (typeof window._ensureCaveCommsDataLoaded === 'function') {
+          window._ensureCaveCommsDataLoaded();
+        }
+        try { calEl.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_e) {}
+      }
       return;
     }
 
@@ -712,12 +745,23 @@
   // rule reaches a closed card's .t-body; the CSS pins [hidden] to none) and parked, so it holds no long-poll. Opening
   // the card reveals that view; closing hides it again. On deck and every other card load on the click, as before.
   var WARM_MAX = 8;   // a bound on the frames held, not a refusal: the rest of a wide Active row loads on the click
+  function isLowSpecMode() {
+    try { return !!(window.__anchorLowSpec || (window.parent && window.parent.__anchorLowSpec) || (window.ANCHOR_BOOT && window.ANCHOR_BOOT.low_spec_mode)); }
+    catch (e) { return !!window.__anchorLowSpec; }
+  }
   function isShellHidden() {
     try { return !!(document.hidden || window.__anchorHidden || (window.frameElement && window.frameElement.hidden)); }
     catch (e) { return !!document.hidden; }
   }
+  function isActiveShelfCollapsed() {
+    var body = document.getElementById('caveCockpitsBody');
+    if (body && body.hidden) return true;
+    var hub = document.getElementById('caveCockpitsTile');
+    if (hub && !hub.classList.contains('open')) return true;
+    return false;
+  }
   function warmTile(card) {
-    if (isShellHidden()) return;
+    if (isLowSpecMode() || isShellHidden() || isActiveShelfCollapsed()) return;
     var body = $('.t-body', card), boot = window.ANCHOR_BOOT || {};
     if (!body || card._warmTalk || card.classList.contains('open') || !card.closest('#shActive')) return;
     if (boot.auth_required && !boot.logged_in && !token()) return;   // a browser that cannot read the record preloads nothing
@@ -727,11 +771,12 @@
     try { startTalk(card, card.getAttribute('data-tile'), card.getAttribute('data-dir') || ''); } finally { card._prewarm = false; }
   }
   function warmActive() {
-    if (isShellHidden()) return;
+    if (isLowSpecMode() || isShellHidden() || isActiveShelfCollapsed()) return;
     var cards = $$('#shActive .tile[data-tile]').filter(function (c) { return !!$('.t-body', c); }).slice(0, WARM_MAX), i = 0;
-    (function next() { if (i >= cards.length || isShellHidden()) return; warmTile(cards[i++]); setTimeout(next, 1500); })();
+    (function next() { if (i >= cards.length || isShellHidden() || isActiveShelfCollapsed()) return; warmTile(cards[i++]); setTimeout(next, 1500); })();
   }
   function warmWhenIdle() { setTimeout(function () { if (window.requestIdleCallback) window.requestIdleCallback(warmActive, { timeout: 3000 }); else warmActive(); }, 1500); }
+  window._caveWarmActiveIfVisible = warmWhenIdle;
   if (document.readyState === 'complete') warmWhenIdle(); else window.addEventListener('load', warmWhenIdle);
   function stopTalk(card) { if (card._talk && card._talk.stop) card._talk.stop(); card._talk = null; }
   // W2e-6 (his ask, 19:0x): a file dropped on the OPEN tile lands in the folder of the cockpit the tile was opened on
@@ -901,18 +946,22 @@
     }
     // the steward's nudge (W3b), proactive triage strip, this-week board, comms pulse, collab strip, and the seeds
     var openHzBtn = $('#shTriage .chz-card.open'), openHzKey = openHzBtn ? openHzBtn.getAttribute('data-hz-toggle') : '';
+    var procWasOpen = !!(window.CaveProcessingDrawer && window.CaveProcessingDrawer.isOpen());
     var wlWasOpen = typeof _wlSpineIsOpen === 'boolean' ? _wlSpineIsOpen : !($('#wlSpineBody') && $('#wlSpineBody').hidden);
     var wlBusyUi = busyIn($('#caveWorkingListSpine'));
+    var triageBusyUi = wlBusyUi || busyIn($('#shTriage'));
+    var srWasOpen = !!($('#caveSpeedRacerBody') && !$('#caveSpeedRacerBody').hidden);
     var calWasOpen = $('#cal') && $('#cal').classList.contains('open');
     var calWasLayout = ($('#commsGrid') && $('#commsGrid').getAttribute('data-layout')) || 'split';
     var mailWasFolder = ($('#caveMailBucketsGrid') && $('#caveMailBucketsGrid').getAttribute('data-mail-folder-mode')) || 'all';
     var calBusyUi = !!(
       (window._caveEmailActionInFlight && window._caveEmailActionInFlight > 0) ||
-      ($('#caveSpeedRacerBody') && !$('#caveSpeedRacerBody').hidden) ||
+      srWasOpen ||
       ($('#caveEmailDialoguePane') && !$('#caveEmailDialoguePane').hidden && !window._emailDlgClosed && window._activeEmailDialogue && window._activeEmailDialogue.uid) ||
       ($('#caveCalDialoguePane') && !$('#caveCalDialoguePane').hidden) ||
       ($('#caveDlgAttachmentPreviewHost') && !$('#caveDlgAttachmentPreviewHost').hidden) ||
       ($('#caveCommsDialogueTile') && !$('#caveCommsDialogueTile').hidden) ||
+      ($('#caveCommsServicesBar') && $('#caveCommsServicesBar').open) ||
       ($('#caveCommsSetupDrawer') && $('#caveCommsSetupDrawer').open) ||
       ($('#caveCommsConnectModal') && !$('#caveCommsConnectModal').hidden) ||
       ($('#caveCommsDeviceFlowBox') && !$('#caveCommsDeviceFlowBox').hidden)
@@ -921,11 +970,11 @@
     var calHydrated = !!(window._caveCommsData && window._caveCommsData.ok && $('#cal .cave-mail-card, #cal .cal-ev, #cal [data-cal-day]'));
     ['shTriage', 'thisWeekBoard', 'cal', 'caveCollabStrip'].forEach(function (id) {
       if (id === 'cal' && (calBusyUi || calHydrated)) return;
-      if (id === 'shTriage' && wlBusyUi) return;
+      if (id === 'shTriage' && triageBusyUi) return;
       var a = document.getElementById(id), b = doc.getElementById(id);
       if (a && b) morph(a, b);
     });
-    ['nudgeSlot', 'seedCount', 'seedLbl', 'seedPanel', 'ptileCount', 'apGroups'].forEach(function (id) { var a = document.getElementById(id), b = doc.getElementById(id); if (a && b) morph(a, b); });
+    ['nudgeSlot', 'ptileCount', 'apGroups'].forEach(function (id) { var a = document.getElementById(id), b = doc.getElementById(id); if (a && b) morph(a, b); });
     if (openHzKey) {
       var nb = $('#shTriage .chz-card[data-hz-toggle="' + openHzKey + '"]'), nd = document.getElementById('hzDrawer-' + openHzKey);
       if (nb && nd) { nb.classList.add('open'); nb.setAttribute('aria-expanded', 'true'); nd.hidden = false; }
@@ -939,7 +988,10 @@
       window._applySourceFilterToDOM();
     }
     if (typeof window._ensureActiveEmailPaneHydrated === 'function') window._ensureActiveEmailPaneHydrated();
+    if (typeof _setSpeedRacerExpanded === 'function') _setSpeedRacerExpanded(srWasOpen);
     if (typeof _renderCaveSpeedRacerTile === 'function') _renderCaveSpeedRacerTile();
+    if (typeof _syncCosExpandedUi === 'function') _syncCosExpandedUi();
+    if (window.CaveProcessingDrawer && window.CaveProcessingDrawer.restoreAfterMorph) window.CaveProcessingDrawer.restoreAfterMorph(procWasOpen);
     if (typeof _setTheListSpineOpen === 'function') _setTheListSpineOpen(wlWasOpen, true);
     if (typeof _renderWorkingListSpine === 'function') _renderWorkingListSpine();
     if (collabWasOpen && $('#caveCollabStrip')) {
@@ -955,6 +1007,7 @@
       if (morph(cb0, cb1)) { openG.forEach(function (g) { var r = $('.grow[data-g="' + g + '"]', cb0); if (r) r.classList.add('open'); }); bindDrags(cb0); }
     }
     placeShelves(doc);
+    if (window.CaveTidyControls && window.CaveTidyControls.syncAfterMorph) window.CaveTidyControls.syncAfterMorph(doc);
     // the Candidates: the groups and the count; the search, the sort and the open tile stay as he left them
     var c0 = $('#shCands'), c1 = doc.getElementById('shCands');
     if (c0 && !c1) { if (busyIn(c0)) placeSkipped = true; else c0.remove(); }
@@ -1520,23 +1573,11 @@
   var DRAFT_KEY = 'anchor:draft:highseat', _draftT = null;
   function saveDraft() { try { if (say && say.value.trim()) localStorage.setItem(DRAFT_KEY, say.value); else localStorage.removeItem(DRAFT_KEY); } catch (e) {} }
   function clearDraft() { try { localStorage.removeItem(DRAFT_KEY); } catch (e) {} }
-  if (say) {
+    if (say) {
     say.addEventListener('input', function () { clearTimeout(_draftT); _draftT = setTimeout(saveDraft, 250); });
     window.addEventListener('beforeunload', saveDraft);
     try { var keptDraft = localStorage.getItem(DRAFT_KEY); if (keptDraft && keptDraft.trim() && !say.value.trim()) { say.value = keptDraft; receipt('Your unsent text is back in the box.'); } } catch (e) {}
   }
-  // the Seeds button opens the seed panel; a seed's button puts the steward's verb in the composer — Send is the word
-  var seedBtn = $('#seedBtn'), seedPanel = $('#seedPanel');
-  if (seedBtn && seedPanel) seedBtn.addEventListener('click', function () {
-    var open = seedPanel.classList.toggle('open'); seedBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-  });
-  document.addEventListener('click', function (e) {   // delegated (W4): a seed panel placed again keeps its buttons
-    var g = e.target.closest('#seedPanel .go[data-seed-text]'); if (!g || !say) return;
-    say.value = 'make ' + g.getAttribute('data-seed-text') + ' an initiative in tier 3';
-    say.dispatchEvent(new Event('input'));
-    say.focus(); say.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    receipt('The verb is in the composer — add the tier or the life area if you want, then Send.');
-  });
   // W2c-2 (2026-09-30, his word: the dialogue must "engage the steward and then show the dialogue"): the composer is
   // ONE box. A Campaign verb and the new-project ask are answered by the High Seat's own route as before (a receipt,
   // the confirm card); anything else is said to the Campaign's steward — the Desk — and the exchange shows below, live
@@ -2668,32 +2709,6 @@
       wBtn.textContent = '🧭 Setup & Onboard';
       hdrRight.insertBefore(wBtn, hdrRight.firstChild);
     }
-    if (!document.getElementById('hs-download-test-exe-btn')) {
-      var tBtn = document.createElement('a');
-      tBtn.id = 'hs-download-test-exe-btn';
-      tBtn.className = 'btn';
-      tBtn.href = '/static/downloads/Anchor-Test-Onboard.zip?download=1';
-      tBtn.setAttribute('download', 'Anchor-Test-Onboard.zip');
-      tBtn.title = 'Download isolated Desktop Onboard-Test Anchor.exe package (runs on port 8787 + isolated AppData so your live Anchor.exe & Tailscale stay untouched)';
-      tBtn.style.cssText = 'text-decoration:none;border-color:rgba(245,158,11,0.55);color:#fcd34d;font-weight:600';
-      tBtn.textContent = '🧪 Desktop Onboard-Test.exe';
-      var ref = document.getElementById('hs-onboard-wizard-btn');
-      if (ref && ref.nextSibling) hdrRight.insertBefore(tBtn, ref.nextSibling);
-      else hdrRight.appendChild(tBtn);
-    }
-    if (!document.getElementById('hs-download-prod-exe-btn')) {
-      var pBtn = document.createElement('a');
-      pBtn.id = 'hs-download-prod-exe-btn';
-      pBtn.className = 'btn';
-      pBtn.href = '/static/downloads/Anchor.zip?download=1';
-      pBtn.setAttribute('download', 'Anchor.zip');
-      pBtn.title = 'Download production Anchor.exe package (shareable with collaborators)';
-      pBtn.style.cssText = 'text-decoration:none;border-color:rgba(16,185,129,0.55);color:#6ee7b7;font-weight:600';
-      pBtn.textContent = '📦 Anchor.exe';
-      var ref2 = document.getElementById('hs-onboard-wizard-btn');
-      if (ref2 && ref2.nextSibling) hdrRight.insertBefore(pBtn, ref2.nextSibling);
-      else hdrRight.appendChild(pBtn);
-    }
   }
   ensureHeaderDownloadButtons();
 
@@ -2952,6 +2967,14 @@
     var railBtn = $('#railNav button[data-rail="email"]');
     if (railBtn) {
       railBtn.classList.toggle('has-unread', cnt > 0);
+    }
+    var cosEmCntEl = document.getElementById('cosEmailCount');
+    if (cosEmCntEl) {
+      cosEmCntEl.textContent = String(cnt);
+    }
+    var cosEmTile = document.getElementById('cosEmailTile');
+    if (cosEmTile) {
+      cosEmTile.classList.toggle('has-unread', cnt > 0);
     }
   }
   window._syncRailEmailCount = _syncRailEmailCount;
@@ -3400,6 +3423,8 @@
     });
     var visCntEl = document.getElementById('caveCalVisibleCount');
     if (visCntEl) visCntEl.textContent = String(allEvs.length);
+    var cosCalCntEl = document.getElementById('cosCalendarCount');
+    if (cosCalCntEl) cosCalCntEl.textContent = String(allEvs.length);
     if (!_caveCalDay) {
       _caveCalDay = nowIso;
     }
@@ -4464,12 +4489,284 @@
     if (bccIn) bccIn.value = '';
     if (subIn) subIn.value = /^re:/i.test(rawSubj) ? rawSubj : ('Re: ' + rawSubj);
     if (bodyIn) bodyIn.value = '';
+    _syncAllRecipDropdownBadges();
     var drwInit = document.getElementById('caveDlgDirectReplyDrawer');
     if (drwInit) drwInit.open = false;
     _applyDlgReplyModeBtnStyles('reply');
     if (noteEl) noteEl.textContent = 'Type a manual response below or refine with Scribe.';
     setTimeout(_syncCaveMailOvalScrollbar, 25);
   }
+
+  function _parseRecipientTokens(rawVal) {
+    var s = String(rawVal || '');
+    var out = [];
+    var cur = '';
+    var inQuote = false;
+    var angleDepth = 0;
+    for (var i = 0; i < s.length; i++) {
+      var ch = s.charAt(i);
+      if (ch === '"' && (i === 0 || s.charAt(i - 1) !== '\\')) {
+        inQuote = !inQuote;
+        cur += ch;
+      } else if (!inQuote && ch === '<') {
+        angleDepth++;
+        cur += ch;
+      } else if (!inQuote && ch === '>' && angleDepth > 0) {
+        angleDepth--;
+        cur += ch;
+      } else if (!inQuote && angleDepth === 0 && (ch === ',' || ch === ';')) {
+        var trimmed = cur.trim();
+        if (trimmed) out.push(trimmed);
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    var tail = cur.trim();
+    if (tail) out.push(tail);
+    return out.map(function (tok) {
+      var m = tok.match(/^(.*?)<([^>]+)>$/);
+      var name = m ? m[1].trim().replace(/^["']+|["']+$/g, '') : '';
+      var email = m ? m[2].trim() : tok.trim();
+      return {
+        raw: tok,
+        name: name,
+        email: email,
+        display: name && email && name.toLowerCase() !== email.toLowerCase()
+          ? (name + ' <' + email + '>')
+          : (email || tok)
+      };
+    });
+  }
+
+  function _syncAllRecipDropdownBadges() {
+    $$('[data-recip-dropdown-for]').forEach(function (btn) {
+      var targetId = btn.getAttribute('data-recip-dropdown-for') || '';
+      var inp = targetId ? document.getElementById(targetId) : null;
+      if (!inp) return;
+      var parsed = _parseRecipientTokens(inp.value || '');
+      var cnt = parsed.length;
+      btn.classList.toggle('has-multi', cnt > 1);
+      btn.setAttribute('data-recip-count', String(cnt));
+      btn.innerHTML = cnt > 0 ? (cnt + ' &#9662;') : '&#9662;';
+      btn.title = cnt > 0
+        ? (cnt + ' recipient' + (cnt === 1 ? '' : 's') + ' in field — click to view complete list or add/remove')
+        : 'Click to view or add recipients from Unified Address Book';
+    });
+  }
+
+  var _recipPopoverEl = null;
+  var _recipPopoverInputId = '';
+
+  function _hideRecipInspectorPopover() {
+    if (_recipPopoverEl) _recipPopoverEl.hidden = true;
+    _recipPopoverInputId = '';
+  }
+
+  function _ensureRecipInspectorPopover() {
+    if (_recipPopoverEl && _recipPopoverEl.isConnected !== false) return _recipPopoverEl;
+    var existingPop = document.getElementById('caveRecipInspectorPopover');
+    if (existingPop) {
+      _recipPopoverEl = existingPop;
+      return existingPop;
+    }
+    var pop = document.createElement('div');
+    pop.id = 'caveRecipInspectorPopover';
+    pop.hidden = true;
+    document.body.appendChild(pop);
+    _recipPopoverEl = pop;
+    pop.addEventListener('click', function (ev) {
+      var closeBtn = ev.target && ev.target.closest && ev.target.closest('[data-recip-pop-close]');
+      if (closeBtn) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        _hideRecipInspectorPopover();
+        return;
+      }
+      var remBtn = ev.target && ev.target.closest && ev.target.closest('[data-recip-remove-idx]');
+      if (remBtn && _recipPopoverInputId) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        var inp = document.getElementById(_recipPopoverInputId);
+        if (!inp) return;
+        var idx = parseInt(remBtn.getAttribute('data-recip-remove-idx') || '-1', 10);
+        var list = _parseRecipientTokens(inp.value || '');
+        if (idx >= 0 && idx < list.length) {
+          list.splice(idx, 1);
+          inp.value = list.map(function (x) { return x.raw; }).join(', ');
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          inp.dispatchEvent(new Event('change', { bubbles: true }));
+          _syncAllRecipDropdownBadges();
+          _renderRecipInspectorPopoverBody(inp, ((document.getElementById('caveRecipAddSearch') || {}).value || ''));
+        }
+        return;
+      }
+      var addRow = ev.target && ev.target.closest && ev.target.closest('[data-recip-add-val]');
+      if (addRow && _recipPopoverInputId) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        var inpA = document.getElementById(_recipPopoverInputId);
+        if (!inpA) return;
+        var addVal = addRow.getAttribute('data-recip-add-val') || '';
+        if (!addVal) return;
+        var curTokens = _parseRecipientTokens(inpA.value || '');
+        var addEm = (addVal.match(/<([^>]+)>/) ? addVal.match(/<([^>]+)>/)[1] : addVal).trim().toLowerCase();
+        var exists = curTokens.some(function (t) { return String(t.email || '').toLowerCase() === addEm; });
+        if (!exists) {
+          var nextArr = curTokens.map(function (x) { return x.raw; });
+          nextArr.push(addVal);
+          inpA.value = nextArr.join(', ');
+          inpA.dispatchEvent(new Event('input', { bubbles: true }));
+          inpA.dispatchEvent(new Event('change', { bubbles: true }));
+          _syncAllRecipDropdownBadges();
+        }
+        _renderRecipInspectorPopoverBody(inpA, '');
+        return;
+      }
+    });
+    pop.addEventListener('input', function (ev) {
+      if (ev.target && ev.target.id === 'caveRecipAddSearch' && _recipPopoverInputId) {
+        var inpS = document.getElementById(_recipPopoverInputId);
+        if (inpS) _renderRecipInspectorPopoverControls(inpS, ev.target.value || '');
+      }
+    });
+    return pop;
+  }
+
+  function _renderRecipInspectorPopoverControls(inp, filterQ) {
+    var contactsHost = document.getElementById('caveRecipPopContactsHost');
+    if (!contactsHost || !inp) return;
+    var curTokens = _parseRecipientTokens(inp.value || '');
+    var curEmails = {};
+    curTokens.forEach(function (t) {
+      if (t.email) curEmails[String(t.email).toLowerCase()] = true;
+    });
+    var q = String(filterQ || '').trim().toLowerCase();
+    var pool = Array.isArray(window.ANCHOR_UNIFIED_ADDRESS_BOOK) ? window.ANCHOR_UNIFIED_ADDRESS_BOOK : [];
+    var matches = pool.filter(function (c) {
+      if (!c || !c.email) return false;
+      var emL = String(c.email).trim().toLowerCase();
+      if (curEmails[emL]) return false;
+      if (!q) return true;
+      return emL.indexOf(q) >= 0 || String(c.name || '').toLowerCase().indexOf(q) >= 0;
+    }).slice(0, 14);
+    if (!matches.length) {
+      contactsHost.innerHTML = '<div style="font-size:11px;color:#64748b;padding:4px 2px">' + (q ? 'No matching contacts not already in list.' : 'Type above to search Unified Address Book.') + '</div>';
+      return;
+    }
+    contactsHost.innerHTML = matches.map(function (c) {
+      var nm = String(c.name || '').trim();
+      var em = String(c.email || '').trim();
+      var formatted = nm ? (nm.indexOf(',') >= 0 ? ('"' + nm.replace(/"/g, '') + '" <' + em + '>') : (nm + ' <' + em + '>')) : em;
+      return (
+        '<div class="cave-recip-pop-add" data-recip-add-val="' + _escH(formatted) + '">' +
+          '<span><b>' + _escH(nm || em) + '</b>' + (nm ? (' <span style="color:#7dd3fc">&lt;' + _escH(em) + '&gt;</span>') : '') + '</span>' +
+          '<span style="color:#6ee7b7;font-weight:800;font-size:11px">+ Add</span>' +
+        '</div>'
+      );
+    }).join('');
+  }
+
+  function _renderRecipInspectorPopoverBody(inp, filterQ) {
+    var pop = _ensureRecipInspectorPopover();
+    if (!inp) return;
+    var fieldLbl = 'Recipients';
+    if (/Cc/i.test(inp.id)) fieldLbl = 'CC Recipients';
+    else if (/Bcc/i.test(inp.id)) fieldLbl = 'BCC Recipients';
+    else if (/To/i.test(inp.id)) fieldLbl = 'To Recipients';
+    var parsed = _parseRecipientTokens(inp.value || '');
+    var rowsHtml = parsed.length
+      ? parsed.map(function (r, idx) {
+          return (
+            '<div class="cave-recip-pop-row" data-recip-row-idx="' + idx + '">' +
+              '<div style="min-width:0;flex:1"><span style="color:#7dd3fc;font-family:var(--mono);font-weight:800;margin-right:6px">' + (idx + 1) + '.</span>' +
+                (r.name ? ('<b style="color:#f8fafc">' + _escH(r.name) + '</b> <span style="color:#94a3b8">&lt;' + _escH(r.email) + '&gt;</span>') : ('<b style="color:#f8fafc">' + _escH(r.email || r.raw) + '</b>')) +
+              '</div>' +
+              '<button type="button" class="mini" data-recip-remove-idx="' + idx + '" title="Remove recipient" style="color:#fda4af;border-color:rgba(244,63,94,0.45);padding:1px 6px">&times;</button>' +
+            '</div>'
+          );
+        }).join('')
+      : '<div style="font-size:11.5px;color:#94a3b8;padding:6px 4px">No recipients currently in ' + _escH(fieldLbl) + '.</div>';
+
+    pop.innerHTML =
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding-bottom:6px;margin-bottom:6px;border-bottom:1px solid #1e293b">' +
+        '<b style="font-size:12px;color:#e0f2fe">' + _escH(fieldLbl) + ' (' + parsed.length + ' in list)</b>' +
+        '<button type="button" class="mini" data-recip-pop-close="1" style="padding:1px 7px">&times; Close</button>' +
+      '</div>' +
+      '<div id="caveRecipPopCurrentList" style="max-height:190px;overflow-y:auto;margin-bottom:8px">' + rowsHtml + '</div>' +
+      '<div style="border-top:1px dashed #283548;padding-top:7px">' +
+        '<input type="text" id="caveRecipAddSearch" value="' + _escH(filterQ || '') + '" placeholder="+ Add person from Address Book (name or email)..." style="width:100%;box-sizing:border-box;padding:5px 8px;border-radius:6px;border:1px solid #334155;background:#070b12;color:#f8fafc;font-size:11.5px;margin-bottom:5px">' +
+        '<div id="caveRecipPopContactsHost" style="max-height:135px;overflow-y:auto"></div>' +
+      '</div>';
+    _renderRecipInspectorPopoverControls(inp, filterQ || '');
+  }
+
+  function _openRecipInspectorPopover(btn, inp) {
+    if (!btn || !inp) return;
+    var pop = _ensureRecipInspectorPopover();
+    if (!pop.hidden && _recipPopoverInputId === inp.id) {
+      _hideRecipInspectorPopover();
+      return;
+    }
+    _recipPopoverInputId = inp.id;
+    _renderRecipInspectorPopoverBody(inp, '');
+    pop.hidden = false;
+    var rect = inp.getBoundingClientRect();
+    var popW = Math.min(440, window.innerWidth - 20);
+    var leftPx = Math.max(10, Math.min(Math.round(rect.left), window.innerWidth - popW - 10));
+    var spaceBelow = window.innerHeight - rect.bottom - 12;
+    pop.style.width = popW + 'px';
+    pop.style.left = leftPx + 'px';
+    if (spaceBelow < 220 && rect.top > 240) {
+      pop.style.top = 'auto';
+      pop.style.bottom = Math.max(10, Math.round(window.innerHeight - rect.top + 4)) + 'px';
+    } else {
+      pop.style.bottom = 'auto';
+      pop.style.top = Math.max(10, Math.round(rect.bottom + 4)) + 'px';
+    }
+    if (!Array.isArray(window.ANCHOR_UNIFIED_ADDRESS_BOOK) || !window.ANCHOR_UNIFIED_ADDRESS_BOOK.length) {
+      fetch('/api/steward/comms?view=contacts&q=', { headers: headers(), cache: 'no-store' })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d && d.ok && Array.isArray(d.contacts)) {
+            _syncAddressBookDatalist(d.contacts);
+            if (!pop.hidden && _recipPopoverInputId === inp.id) {
+              var sEl = document.getElementById('caveRecipAddSearch');
+              _renderRecipInspectorPopoverControls(inp, sEl ? sEl.value : '');
+            }
+          }
+        })
+        .catch(function () {});
+    }
+  }
+
+  document.addEventListener('click', function (ev) {
+    var ddBtn = ev.target && ev.target.closest && ev.target.closest('[data-recip-dropdown-for]');
+    if (ddBtn) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      var targetId = ddBtn.getAttribute('data-recip-dropdown-for') || '';
+      var inp = targetId ? document.getElementById(targetId) : null;
+      if (inp) _openRecipInspectorPopover(ddBtn, inp);
+      return;
+    }
+    if (_recipPopoverEl && !_recipPopoverEl.hidden && !(ev.target && ev.target.closest && ev.target.closest('#caveRecipInspectorPopover'))) {
+      _hideRecipInspectorPopover();
+    }
+  });
+
+  document.addEventListener('keydown', function (ev) {
+    if (ev && ev.key === 'Escape' && _recipPopoverEl && !_recipPopoverEl.hidden) {
+      _hideRecipInspectorPopover();
+    }
+  });
+
+  document.addEventListener('input', function (ev) {
+    var t = ev && ev.target;
+    if (t && t.id && _RECIPIENT_INPUT_IDS[t.id]) {
+      _syncAllRecipDropdownBadges();
+    }
+  });
 
   function _syncAddressBookDatalist(addrBook) {
     var list = Array.isArray(addrBook) ? addrBook : (window.ANCHOR_UNIFIED_ADDRESS_BOOK || []);
@@ -5285,13 +5582,13 @@
         .then(function (r) { return r.json(); })
         .then(function (d) {
           if (d && d.speed_racer) {
-            _srState = _mergeSrStateKeepLocal(d.speed_racer, true);
-            _updateSrBadges();
-            var cNow = _updateScribeQueuePill(d.scribe_queue_counts);
-            var srBodyEl = document.getElementById('caveSpeedRacerBody');
-            if (srBodyEl && !srBodyEl.hidden) {
-              _renderCaveSpeedRacerTile(false, true);
+            if (typeof _syncSpeedRacerFromServer === 'function') {
+              _syncSpeedRacerFromServer(d.speed_racer, false);
+            } else {
+              _srState = _mergeSrStateKeepLocal(d.speed_racer, true);
+              _updateSrBadges();
             }
+            var cNow = _updateScribeQueuePill(d.scribe_queue_counts);
             if (cNow.pending <= 0 && _scribeQueueWatchTimer) {
               clearInterval(_scribeQueueWatchTimer);
               _scribeQueueWatchTimer = 0;
@@ -5476,70 +5773,8 @@
       _updateScribeQueuePill(d.scribe_queue_counts);
     }
     setTimeout(_syncCaveMailOvalScrollbar, 35);
-    var accBar = document.getElementById('caveConnectedAccountsBar');
-    var syncBtnToolbar = document.getElementById('btnCaveCommsSync');
-    if (syncBtnToolbar && syncBtnToolbar.parentElement && !document.getElementById('btnCaveToolbarChangePw')) {
-      syncBtnToolbar.insertAdjacentHTML(
-        'beforebegin',
-        '<button type="button" class="mini comms-sync-btn" id="btnCaveToolbarChangePw" data-open-comms-connect="1" style="border-color:#fbbf24;color:#fde68a;font-weight:700" title="Open box to change password or connect an account">\u270f\ufe0f Change Password / Account</button>'
-      );
-    }
-    if (accBar && Array.isArray(d.accounts)) {
-      var allConnected = true;
-      var pillsHtml = [];
-      d.accounts.forEach(function (a) {
-        if (!a || !a.id) return;
-        var aid = _escH(a.id);
-        var albl = _escH(a.label || a.family || 'Account');
-        var aem = _escH(a.email || 'Calendar ICS');
-        var astat = String(a.status || 'configured').toLowerCase();
-        var famL = String(a.family || 'gmail').toLowerCase();
-        var noteTip = _escH(String(a.last_imap_note || a.last_ics_note || '').slice(0, 180));
-        var editBtnHtml =
-          '<button type="button" class="mini" data-comms-edit-account="' + aid + '" data-comms-edit-email="' + aem + '" data-comms-edit-label="' + albl + '" data-comms-edit-family="' + _escH(famL) + '" ' +
-          'title="Open box to change/update password for ' + aem + '" ' +
-          'style="border-color:#94a3b8;color:#e2e8f0;background:rgba(148,163,184,0.14);padding:1px 7px;font-size:11px;font-weight:650">' +
-          '\u270f\ufe0f Change Password</button> ';
-        if (astat === 'paused_safety' || astat === 'auth_error') {
-          allConnected = false;
-          var fixBtn = '';
-          if (famL === 'outlook') {
-            fixBtn =
-              '<button type="button" class="mini" data-comms-ms-device-auth="' + aid + '" data-comms-ms-email="' + aem + '" data-comms-ms-label="' + albl + '" ' +
-              'title="Sign in safely with your Microsoft 365 password + 2FA in browser" ' +
-              'style="border-color:#fbbf24;color:#fde68a;background:rgba(245,158,11,0.18);padding:1px 8px;font-size:11px;font-weight:700">' +
-              '\ud83d\udd11 Sign In with Microsoft 365 (2FA)</button> ';
-          } else {
-            fixBtn =
-              '<button type="button" class="mini" data-comms-gmail-2fa="' + aid + '" data-comms-edit-account="' + aid + '" data-comms-edit-email="' + aem + '" data-comms-edit-label="' + albl + '" data-comms-edit-family="' + _escH(famL) + '" ' +
-              'title="Trigger Google 2FA prompt on your phone" ' +
-              'style="border-color:#38bdf8;color:#7dd3fc;background:rgba(56,189,248,0.15);padding:1px 7px;font-size:11px;font-weight:700">' +
-              '\ud83d\udd11 Authenticate 2FA</button> ';
-          }
-          pillsHtml.push(
-            '<span class="comms-pill amber" title="' + noteTip + '" style="display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(245,158,11,0.5);background:rgba(245,158,11,0.1);color:#fde68a">' +
-            '\u26a0 ' + albl + ' (' + aem + ') \u00b7 <span style="font-size:10.5px;opacity:0.9">Needs Sign-In / 2FA</span> ' +
-            fixBtn + editBtnHtml +
-            '<button type="button" class="mini" data-comms-remove-id="' + aid + '" title="Remove this account" style="padding:0 5px;font-size:11px;line-height:1.2">&times;</button>' +
-            '</span>'
-          );
-        } else {
-          pillsHtml.push(
-            '<span class="comms-pill emerald" title="' + noteTip + '" style="display:inline-flex;align-items:center;gap:6px">' +
-            '\u2713 ' + albl + ' (' + aem + ') ' +
-            editBtnHtml +
-            '<button type="button" class="mini" data-comms-remove-id="' + aid + '" title="Disconnect this account" style="padding:0 5px;font-size:11px;line-height:1.2">&times;</button>' +
-            '</span>'
-          );
-        }
-      });
-      if (pillsHtml.length) {
-        accBar.innerHTML = pillsHtml.join('');
-      }
-      if (allConnected) {
-        var devBox = document.getElementById('caveCommsDeviceFlowBox');
-        if (devBox) devBox.hidden = true;
-      }
+    if (window.CaveTidyControls && typeof window.CaveTidyControls.renderCommsServicesBar === 'function') {
+      window.CaveTidyControls.renderCommsServicesBar(d);
     }
   }
   window._hydrateMailCardsFromCommsData = _hydrateMailCardsFromCommsData;
@@ -5890,6 +6125,7 @@
       if (toInM) toInM.value = recips.to || '';
       if (ccInM) ccInM.value = recips.cc || '';
       if (subInM) subInM.value = recips.subject || '';
+      _syncAllRecipDropdownBadges();
       if (rMode === 'forward') {
         if (bodyInM && bodyInM.value.indexOf('Forwarded message') < 0) {
           bodyInM.value = (bodyInM.value ? (bodyInM.value + recips.bodyPrefix) : recips.bodyPrefix.replace(/^\n+/, ''));
@@ -6578,7 +6814,9 @@
       if (mailFolderBtn.closest('#calHead') || curLayoutF === 'cal') {
         applyCommsLayout(mailFolderBtn.closest('#calHead') ? 'mail' : 'split');
       }
-      if (typeof _setSpeedRacerExpanded === 'function') {
+      if (typeof _collapseSpeedRacerByUser === 'function') {
+        _collapseSpeedRacerByUser();
+      } else if (typeof _setSpeedRacerExpanded === 'function') {
         window._srUserCollapsed = true;
         _setSpeedRacerExpanded(false);
       }
@@ -6790,184 +7028,262 @@
     }
   });
 
-  // Wave 21 (2026-11-02): Option 1 (Mockup 4) Chief-of-Staff Asymmetric Horizon Strip, Break-Between-Cockpits Filter,
-  // Q1 -> Q2 Deep-Work Unlock Meter, Parable-of-the-Oranges Skill Pre-Stage, and 1-Click Rotate
-  var _cosClearedCount = 0;
-  function _setCosBodyExpanded(open, focusCol) {
-    var body = document.getElementById('cosExpandableBody');
+  // Minimalist Chief of Staff (#shTriage):
+  //   - Header shows ONLY: [Chief of Staff (N)] check-toggle, [N Running] tile, and [Poincare Map].
+  //   - Parable of the Oranges prepares plans silently in the background.
+  //   - Checking Chief of Staff displays <= 3 ordered suggestions + a 4th "+N other suggestions" line.
+  //   - Acting, adding to The List, postponing, or deleting promotes item #4 into slot #3 immediately and teaches Steward.
+  var _cosIsOpen = false;
+  try {
+    var _savedCosOpen = window.localStorage && window.localStorage.getItem('anchor.cave.cosOpen');
+    if (_savedCosOpen === '1' || _savedCosOpen === 'true') {
+      _cosIsOpen = true;
+    }
+  } catch (_eCos) {}
+  var _cosExpandedSugId = '';
+  var _cosOverflowOpen = false;
+
+  function _syncCosExpandedUi() {
+    var panel = document.getElementById('cosSuggestionsPanel');
     var strip = document.getElementById('shTriage');
     var btn = document.getElementById('btnCosToggleExpand');
-    var targetCol = focusCol || 'today';
-    if (body) body.hidden = !open;
-    if (strip) {
-      strip.classList.toggle('is-collapsed', !open);
-      $$('#shTriage .chz-drawer').forEach(function (d) {
-        d.hidden = !(open && d.id === ('hzDrawer-' + targetCol));
-      });
-    }
-    if (btn) {
-      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-      var cntMatch = (btn.textContent || '').match(/\(\d+\)/);
-      var cntStr = cntMatch ? (' ' + cntMatch[0]) : '';
-      btn.innerHTML = (open ? '&#9652; Collapse Recommendations' : '&#9662; Recommendations') + cntStr;
-    }
-    $$('#cosCompactSummaryRow .cos-cs-pill').forEach(function (p) {
-      var isMatch = !!(open && p.getAttribute('data-cos-drill') === targetCol);
-      p.classList.toggle('active-drill', isMatch);
-      p.setAttribute('aria-expanded', isMatch ? 'true' : 'false');
-    });
-    if (open && focusCol) {
-      _expandCosColumn(focusCol);
+    var glyph = document.getElementById('cosCheckGlyph');
+    if (panel) panel.hidden = !_cosIsOpen;
+    if (strip) strip.classList.toggle('is-collapsed', !_cosIsOpen);
+    if (btn) btn.setAttribute('aria-expanded', _cosIsOpen ? 'true' : 'false');
+    if (glyph) glyph.innerHTML = _cosIsOpen ? '&#9745;' : '&#9744;';
+  }
+
+  function _setCosBodyExpanded(open) {
+    _cosIsOpen = typeof open === 'boolean' ? open : !_cosIsOpen;
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem('anchor.cave.cosOpen', _cosIsOpen ? '1' : '0');
+      }
+    } catch (_eCosSave) {}
+    _syncCosExpandedUi();
+    if (_cosIsOpen) {
+      _renderCosSuggestionsPanel(_wlState && _wlState.cos_suggestions);
     }
   }
 
-  function _expandCosColumn(colKey) {
-    var strip = document.getElementById('cosHorizonStrip');
-    if (!strip) return;
-    strip.classList.remove('expanded-week', 'expanded-month', 'expanded-quarter');
-    ['today', 'week', 'month', 'quarter'].forEach(function (k) {
-      var el = document.getElementById('cosCol-' + k);
-      if (el) el.classList.remove('hz-focused', 'is-wide');
-    });
-    if (colKey === 'week') {
-      strip.classList.add('expanded-week');
-      var t1 = document.getElementById('cosCol-today'); if (t1) t1.classList.add('is-wide');
-      var w1 = document.getElementById('cosCol-week'); if (w1) { w1.classList.add('is-wide', 'hz-focused'); }
-    } else if (colKey === 'month') {
-      strip.classList.add('expanded-month');
-      var t2 = document.getElementById('cosCol-today'); if (t2) t2.classList.add('is-wide');
-      var m1 = document.getElementById('cosCol-month'); if (m1) { m1.classList.add('is-wide', 'hz-focused'); }
-    } else if (colKey === 'quarter') {
-      strip.classList.add('expanded-quarter');
-      var t3 = document.getElementById('cosCol-today'); if (t3) t3.classList.add('is-wide');
-      var q1 = document.getElementById('cosCol-quarter'); if (q1) { q1.classList.add('is-wide', 'hz-focused'); }
-    } else {
-      var t0 = document.getElementById('cosCol-today'); if (t0) { t0.classList.add('is-wide', 'hz-focused'); }
-      var w0 = document.getElementById('cosCol-week'); if (w0) w0.classList.add('is-wide');
+  function _renderCosSuggestionRowClient(sug, rank) {
+    var rawId = String((sug && sug.id) || '');
+    var sid = _escH(rawId);
+    var sk = _escH((sug && sug.source_key) || '');
+    var title = _escH((sug && sug.title) || 'Suggested Effort');
+    var summary = _escH((sug && sug.summary) || '');
+    var detail = _escH((sug && sug.detail) || '');
+    var ckName = _escH((sug && sug.cockpit_name) || 'Cave of Wonders');
+    var ckHref = _escH((sug && sug.cockpit_href) || '/steward/v1');
+    var emailUid = _escH((sug && sug.email_uid) || '');
+    var cat = _escH((sug && sug.category) || 'Business');
+    var prio = _normPrioNum((sug && sug.priority) || 2);
+    var rankLbl = typeof rank === 'number' ? ('#' + rank) : '&#8226;';
+    var isDetailOpen = !!(_cosExpandedSugId && _cosExpandedSugId === rawId);
+    var prevInputEl = rawId ? document.getElementById('cosDirIn-' + rawId) : null;
+    var savedDirVal = prevInputEl ? prevInputEl.value : '';
+    var stepsArr = (sug && Array.isArray(sug.plan_steps)) ? sug.plan_steps : [];
+    var stepsHtml = stepsArr.map(function (st) {
+      var sTxt = String(st || '').trim();
+      return sTxt ? ('<li>' + _escH(sTxt) + '</li>') : '';
+    }).join('');
+    return (
+      '<div class="cos-min-row" data-cos-sug-id="' + sid + '" data-cos-source-key="' + sk + '"' + (emailUid ? (' data-cos-email-uid="' + emailUid + '"') : '') + '>' +
+        '<div class="cos-min-main" data-cos-toggle-detail="' + sid + '">' +
+          '<span class="cos-min-rank">' + rankLbl + '</span>' +
+          '<div class="cos-min-text">' +
+            '<span class="cos-min-title">' + title + '</span>' +
+            '<span class="cos-min-sub">' + summary + (ckName ? (' &middot; <em>' + ckName + '</em>') : '') + '</span>' +
+          '</div>' +
+          '<div class="cos-min-acts">' +
+            '<a class="cos-min-btn act" href="' + ckHref + '" target="_blank" rel="noopener" data-cos-act="act_now" data-cos-id="' + sid + '" title="Open &amp; act immediately">&#8599; Act</a>' +
+            '<button type="button" class="cos-min-btn add" data-cos-act="add_to_list" data-cos-id="' + sid + '" title="Add to The List">+ List</button>' +
+            '<button type="button" class="cos-min-btn later" data-cos-act="postpone" data-cos-id="' + sid + '" title="Postpone for later">Later</button>' +
+            '<button type="button" class="cos-min-btn del" data-cos-act="delete" data-cos-id="' + sid + '" title="Delete suggestion">&times;</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="cos-min-detail" id="cosSugDetail-' + sid + '"' + (isDetailOpen ? '' : ' hidden') + '>' +
+          '<div class="cos-min-why">' + detail + '</div>' +
+          '<div class="cos-min-plan-lbl">Proposed Plan (' + cat + ' &middot; Priority #' + prio + '):</div>' +
+          '<ol class="cos-min-plan-list">' + stepsHtml + '</ol>' +
+          '<div class="cos-min-dir-row">' +
+            '<input type="text" class="cos-min-dir-in" id="cosDirIn-' + sid + '" value="' + _escH(savedDirVal) + '" placeholder="Give Steward modifying directions or refine plan...">' +
+            '<button type="button" class="cos-min-btn act" data-cos-act="send_to_steward" data-cos-id="' + sid + '">Send to Steward</button>' +
+            '<button type="button" class="cos-min-btn add" data-cos-act="add_to_list" data-cos-id="' + sid + '" data-cos-with-edits="1">+ List with Edits</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function _renderCosSuggestionsPanel(bundleOverride) {
+    var bundle = (bundleOverride && typeof bundleOverride === 'object')
+      ? bundleOverride
+      : ((_wlState && _wlState.cos_suggestions && typeof _wlState.cos_suggestions === 'object') ? _wlState.cos_suggestions : null);
+    if (!bundle) return;
+    var topThree = Array.isArray(bundle.top_three) ? bundle.top_three.slice(0, 3) : [];
+    var overflow = Array.isArray(bundle.overflow) ? bundle.overflow : [];
+    var overflowCount = typeof bundle.overflow_count === 'number' ? bundle.overflow_count : overflow.length;
+    var totCount = typeof bundle.total_count === 'number' ? bundle.total_count : (topThree.length + overflowCount);
+
+    var totBadge = document.getElementById('cosTotalCountBadge');
+    if (totBadge) totBadge.textContent = String(totCount);
+
+    var aEl = document.activeElement;
+    if (aEl && aEl.classList && aEl.classList.contains('cos-min-dir-in')) {
+      return;
     }
+
+    var topStack = document.getElementById('cosTopThreeStack');
+    if (topStack) {
+      topStack.innerHTML = topThree.length
+        ? topThree.map(function (s, idx) { return _renderCosSuggestionRowClient(s, idx + 1); }).join('')
+        : '<div class="tw-empty" style="padding:8px 10px;font-size:12px">No pending suggestions right now &mdash; Chief of Staff is watching your AI Cockpits, Cave dialogue, and inbox in the background.</div>';
+    }
+
+    var ovWrap = document.getElementById('cosOverflowWrap');
+    var ovBtn = document.getElementById('btnCosOverflowToggle');
+    var ovList = document.getElementById('cosOverflowList');
+    if (ovWrap) {
+      ovWrap.hidden = overflowCount <= 0;
+    }
+    if (ovBtn) {
+      ovBtn.setAttribute('aria-expanded', (_cosOverflowOpen && overflowCount > 0) ? 'true' : 'false');
+      ovBtn.innerHTML = '+<span id="cosOverflowCount">' + overflowCount + '</span> other suggestion' + (overflowCount === 1 ? '' : 's') + ' ' + ((_cosOverflowOpen && overflowCount > 0) ? '&#9652;' : '&#9662;');
+    }
+    if (ovList) {
+      ovList.hidden = !(_cosOverflowOpen && overflowCount > 0);
+      ovList.innerHTML = overflow.map(function (s, idx) { return _renderCosSuggestionRowClient(s, idx + 4); }).join('');
+    }
+    _syncCosExpandedUi();
+  }
+
+  function _findCosSuggestionById(sid) {
+    var bundle = (_wlState && _wlState.cos_suggestions) || {};
+    var pool = [].concat(bundle.suggestions || [], bundle.top_three || [], bundle.overflow || []);
+    for (var i = 0; i < pool.length; i++) {
+      if (pool[i] && String(pool[i].id || '') === String(sid || '')) return pool[i];
+    }
+    return null;
   }
 
   document.addEventListener('click', function (e) {
-    var breakBtn = e.target.closest && e.target.closest('[data-cos-break]');
-    if (breakBtn) {
+    var cosOvBtn = e.target.closest && e.target.closest('[data-cos-toggle-overflow]');
+    if (cosOvBtn) {
       e.preventDefault();
-      var mode = breakBtn.getAttribute('data-cos-break') || 'all';
-      var bar = breakBtn.closest('.cos-break-selector');
-      if (bar) {
-        bar.querySelectorAll('.cos-break-btn').forEach(function (b) { b.classList.remove('active'); });
+      e.stopPropagation();
+      _cosOverflowOpen = !_cosOverflowOpen;
+      _renderCosSuggestionsPanel();
+      return;
+    }
+
+    var cosActBtn = e.target.closest && e.target.closest('[data-cos-act]');
+    if (cosActBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      var actKind = cosActBtn.getAttribute('data-cos-act') || '';
+      var sugId = cosActBtn.getAttribute('data-cos-id') || '';
+      var rowEl = cosActBtn.closest('.cos-min-row');
+      var srcKey = (rowEl && rowEl.getAttribute('data-cos-source-key')) || '';
+      var dirIn = sugId ? document.getElementById('cosDirIn-' + sugId) : null;
+      var dirsTxt = dirIn ? dirIn.value.trim() : '';
+      var sugObj = _findCosSuggestionById(sugId) || {};
+      if (_cosExpandedSugId === sugId) _cosExpandedSugId = '';
+      if (dirIn) dirIn.value = '';
+
+      if (actKind === 'act_now') {
+        var emUid = String(sugObj.email_uid || (rowEl && rowEl.getAttribute('data-cos-email-uid')) || '').trim();
+        var href = cosActBtn.getAttribute('href') || sugObj.cockpit_href || '/steward/v1';
+        if (emUid && (!sugObj.pid || href.indexOf('/steward/v1') < 0)) {
+          var calSec = document.getElementById('cal');
+          if (calSec && !calSec.classList.contains('open')) {
+            calSec.classList.add('open');
+            var calTog = document.getElementById('calTog');
+            if (calTog) calTog.textContent = 'Collapse';
+          }
+          _openEmailDialogueTile(emUid, sugObj.title || '', '', 'Inbox', false);
+        } else if (href) {
+          openWin(href);
+        }
       }
-      breakBtn.classList.add('active');
-      $$('#shTriage [data-cos-card]').forEach(function (card) {
-        var tags = (card.getAttribute('data-break') || '').split(/\s+/);
-        card.style.display = (mode === 'all' || tags.indexOf(mode) >= 0) ? '' : 'none';
+
+      _wlMutate('cos_act', {
+        cos_action: actKind,
+        suggestion_id: sugId,
+        source_key: srcKey || sugObj.source_key || '',
+        directions: dirsTxt,
+        title: sugObj.title || '',
+        category: sugObj.category || 'Business',
+        priority: sugObj.priority || 2,
+        plan_steps: sugObj.plan_steps || [],
+        cockpit_name: sugObj.cockpit_name || '',
+        cockpit_href: sugObj.cockpit_href || '',
+        pid: sugObj.pid || '',
+        effort_dir: sugObj.effort_dir || ''
+      }).then(function (d) {
+        if (!d || !d.ok) return;
+        if (d.cos_suggestions && _wlState) {
+          _wlState.cos_suggestions = d.cos_suggestions;
+        }
+        _renderCosSuggestionsPanel(d.cos_suggestions);
+        if (actKind === 'add_to_list') {
+          _setTheListSpineOpen(true);
+          receipt('\u2713 Added "' + (sugObj.title || 'item') + '" to The List & promoted next suggestion.');
+        } else if (actKind === 'postpone') {
+          receipt('\u23f8 Postponed "' + (sugObj.title || 'suggestion') + '" — promoted next suggestion.');
+        } else if (actKind === 'delete') {
+          receipt('Removed suggestion & updated Steward preferences.');
+        } else if (actKind === 'send_to_steward') {
+          if (!d.steward_dispatched && say) {
+            var planJoined = Array.isArray(sugObj.plan_steps) ? sugObj.plan_steps.join('; ') : '';
+            say.value = '[Chief of Staff · ' + (sugObj.title || 'Effort') + '] ' + (dirsTxt ? (dirsTxt + ' — ') : '') + (planJoined ? ('Plan: ' + planJoined) : '');
+            say.dispatchEvent(new Event('input'));
+            var sendSayBtn = document.getElementById('sayBtn') || document.querySelector('#sayForm button[type="submit"]');
+            if (sendSayBtn && !sendSayBtn.disabled) sendSayBtn.click();
+          }
+          receipt('\ud83e\udded Sent plan & directions to Steward.');
+        } else if (actKind === 'act_now') {
+          receipt('\u2197 Opened "' + (sugObj.title || 'effort') + '" & promoted next suggestion.');
+        }
       });
-      if (mode === 'family') _expandCosColumn('month');
-      else if (mode === 'deep') _expandCosColumn('quarter');
-      else _expandCosColumn('today');
       return;
     }
 
-    var expEl = e.target.closest && e.target.closest('[data-cos-expand-col]');
-    if (expEl && !e.target.closest('a, [data-cos-prestage-prompt], [data-mark-done], [data-cos-rotate], [data-cos-modal-open]')) {
+    var cosToggleDet = e.target.closest && e.target.closest('[data-cos-toggle-detail]');
+    if (cosToggleDet && !e.target.closest('a, button, input')) {
       e.preventDefault();
-      _expandCosColumn(expEl.getAttribute('data-cos-expand-col') || 'today');
-      return;
-    }
-
-    var preBtn = e.target.closest && e.target.closest('[data-cos-prestage-prompt]');
-    if (preBtn) {
-      e.preventDefault(); e.stopPropagation();
-      var pr = preBtn.getAttribute('data-cos-prestage-prompt') || '';
-      var sk = preBtn.getAttribute('data-cos-skill') || 'Foundry Skill';
-      if (say && pr) {
-        say.value = pr;
-        say.dispatchEvent(new Event('input'));
-        say.focus();
-      }
-      receipt('\ud83c\udf4a Parable of the Oranges: Pre-staged ' + sk + ' brief in Steward composer!');
-      return;
-    }
-
-    var dispBtn = e.target.closest && e.target.closest('[data-cos-dispatch-skill]');
-    if (dispBtn) {
-      e.preventDefault(); e.stopPropagation();
-      var dSkill = dispBtn.getAttribute('data-cos-dispatch-skill') || 'researchPrime';
-      var mTitle = (document.getElementById('cosModalTitle') || {}).textContent || 'this effort';
-      if (say) {
-        say.value = 'Pre-stage and run /' + dSkill + ' for "' + mTitle + '" so the AI Cockpit is ready when I open it.';
-        say.dispatchEvent(new Event('input'));
-        say.focus();
-      }
-      var mClose0 = document.getElementById('cosOrangesModal');
-      if (mClose0) mClose0.hidden = true;
-      receipt('\ud83c\udf4a Dispatched ' + dSkill + ' pre-stage request for ' + mTitle + '!');
-      return;
-    }
-
-    var modalOpen = e.target.closest && e.target.closest('[data-cos-modal-open]');
-    if (modalOpen) {
-      e.preventDefault(); e.stopPropagation();
-      var m = document.getElementById('cosOrangesModal');
-      if (m) {
-        var tEl = document.getElementById('cosModalTitle');
-        var trEl = document.getElementById('cosModalTier');
-        var drEl = document.getElementById('cosModalDriver');
-        var orEl = document.getElementById('cosModalOranges');
-        var opBtn = document.getElementById('cosModalOpenBtn');
-        if (tEl) tEl.textContent = modalOpen.getAttribute('data-cos-title') || 'Effort';
-        if (trEl) trEl.textContent = modalOpen.getAttribute('data-cos-tier') || 'Next-Best Effort';
-        if (drEl) drEl.innerHTML = '<strong>Signal / Driver Provenance:</strong> ' + _escH(modalOpen.getAttribute('data-cos-driver') || '');
-        if (orEl) orEl.innerHTML = '\ud83c\udf4a <strong>Parable of the Oranges Pre-Staging:</strong> ' + _escH(modalOpen.getAttribute('data-cos-oranges') || '');
-        if (opBtn) opBtn.href = modalOpen.getAttribute('data-cos-href') || '/steward/v1';
-        m.hidden = false;
+      var detSid = cosToggleDet.getAttribute('data-cos-toggle-detail') || '';
+      if (!detSid) return;
+      _cosExpandedSugId = (_cosExpandedSugId === detSid) ? '' : detSid;
+      var detEl = document.getElementById('cosSugDetail-' + detSid);
+      $$('#cosSuggestionsPanel .cos-min-detail').forEach(function (el) {
+        el.hidden = (el !== detEl) || !_cosExpandedSugId;
+      });
+      if (_cosExpandedSugId && detEl) {
+        var dirFocus = document.getElementById('cosDirIn-' + detSid);
+        if (dirFocus) setTimeout(function () { dirFocus.focus(); }, 20);
       }
       return;
     }
+  });
 
-    if (e.target.closest && (e.target.closest('#btnCosModalClose') || e.target.id === 'cosOrangesModal')) {
-      var mHide = document.getElementById('cosOrangesModal');
-      if (mHide) mHide.hidden = true;
-      return;
-    }
-
-    var rotBtn = e.target.closest && e.target.closest('[data-cos-rotate]');
-    if (rotBtn) {
-      e.preventDefault(); e.stopPropagation();
-      var rId = rotBtn.getAttribute('data-cos-rotate') || '';
-      var rCard = document.getElementById(rId) || rotBtn.closest('.cos-effort-card');
-      if (rCard) {
-        var parentCol = rCard.parentElement;
-        if (parentCol) parentCol.appendChild(rCard);
-        receipt('\u23ed Rotated effort — promoted next candidate in Steward queue!');
-      }
-      return;
-    }
-
-    var clrBtn = e.target.closest && e.target.closest('[data-cos-clear-id]');
-    if (clrBtn) {
-      var cId = clrBtn.getAttribute('data-cos-clear-id') || '';
-      var cCard = document.getElementById(cId);
-      if (cCard) cCard.style.opacity = '0.4';
-      _cosClearedCount++;
-      var lbl = document.getElementById('cosQ2UnlockLabel');
-      var segU = document.getElementById('cosSegUrg');
-      var segD = document.getElementById('cosSegDeep');
-      if (_cosClearedCount === 1) {
-        if (lbl) lbl.innerHTML = '1 Urgent effort cleared! <strong>1 left</strong> &rarr; <strong>3.25 hrs</strong> Q2 Deep Work unlocked today';
-        if (segU) segU.style.width = '14%';
-        if (segD) segD.style.width = '59%';
-      } else {
-        if (lbl) lbl.innerHTML = '\ud83c\udf89 All Urgent Q1 items cleared! <strong>Full 3.75 hrs Quadrant II Deep Work</strong> unlocked!';
-        if (segU) segU.style.width = '0%';
-        if (segD) segD.style.width = '73%';
-      }
+  document.addEventListener('keydown', function (e) {
+    if (!e || e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+    var t = e.target;
+    if (t && t.classList && t.classList.contains('cos-min-dir-in')) {
+      e.preventDefault();
+      var row = t.closest('.cos-min-row');
+      var sendBtn = row ? row.querySelector('[data-cos-act="send_to_steward"]') : null;
+      if (sendBtn) sendBtn.click();
     }
   });
 
   // =========================================================================
-  // Wave 22 (2026-11-06):
-  //   1) Expandable Speed Racer Tile inside Email Hub + Steward Auto-Open
-  //   2) Variation A Persistent Working List Spine with Per-Step AI Cockpit & Initiative Connections
+  // Wave 22 + 2026-11-23 Overhaul:
+  //   1) Expandable Speed Racer Tile inside Email Hub — Auto-Opens ONLY on Genuinely New Ready Drafts
+  //      (NEVER re-opens after user closes it or while user is typing!)
+  //   2) Persistent Living "The List" Spine with Inline Steward Step-Count Self-Check
   // =========================================================================
   var _srState = window.ANCHOR_SPEED_RACER_INIT || { queue: [], sent_log: [], auto_open_ts: 0 };
   var _srIdx = 0;
@@ -6976,6 +7292,177 @@
   var _srLocalEditsById = {};
   var _srClosedById = {};
   var _srAutoSaveTimer = 0;
+  var _SR_SEEN_READY_STORAGE_KEY = 'anchor.cave.srSeenReadyById';
+  var _SR_COLLAPSED_STORAGE_KEY = 'anchor.cave.srCollapsed';
+  var _srDeferredAutoOpenTimer = 0;
+
+  try {
+    var _savedSrCol = window.localStorage && window.localStorage.getItem(_SR_COLLAPSED_STORAGE_KEY);
+    if (_savedSrCol === '1' || _savedSrCol === 'true') {
+      window._srUserCollapsed = true;
+    } else if (_savedSrCol === '0' || _savedSrCol === 'false') {
+      window._srUserCollapsed = false;
+    }
+  } catch (_eSrCol) {}
+
+  function _isReadySrItem(it) {
+    if (!it || typeof it !== 'object') return false;
+    var idStr = String(it.id || '');
+    if (!idStr || idStr.indexOf('sr-opt-') === 0) return false;
+    var st = String(it.status || '').toLowerCase();
+    return st !== 'queued' && st !== 'drafting' && st !== 'error';
+  }
+
+  function _srItemReadyStamp(it) {
+    if (!it || typeof it !== 'object') return 1;
+    var rTs = Number(it.ready_at_ts || it.created_at_ts || 0);
+    return (rTs > 0 && !isNaN(rTs)) ? rTs : 1;
+  }
+
+  function _loadSrSeenReadyMap() {
+    try {
+      var raw = window.localStorage && window.localStorage.getItem(_SR_SEEN_READY_STORAGE_KEY);
+      if (!raw) return {};
+      var parsed = JSON.parse(raw);
+      return (parsed && typeof parsed === 'object') ? parsed : {};
+    } catch (_e) {
+      return {};
+    }
+  }
+
+  function _saveSrSeenReadyMap(mapObj) {
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(_SR_SEEN_READY_STORAGE_KEY, JSON.stringify(mapObj || {}));
+      }
+    } catch (_e) {}
+  }
+
+  function _pruneAndGetUnseenReadySrItems(queueArr) {
+    var q = Array.isArray(queueArr) ? queueArr : [];
+    var seenMap = _loadSrSeenReadyMap();
+    var activeIds = {};
+    q.forEach(function (it) {
+      if (it && it.id) activeIds[String(it.id)] = true;
+    });
+    var changed = false;
+    Object.keys(seenMap).forEach(function (k) {
+      if (!activeIds[k]) {
+        delete seenMap[k];
+        changed = true;
+      }
+    });
+    if (changed) _saveSrSeenReadyMap(seenMap);
+    return q.filter(function (it) {
+      if (!_isReadySrItem(it)) return false;
+      var k = String(it.id || '');
+      var seenTs = Number(seenMap[k] || 0);
+      return !(seenTs >= _srItemReadyStamp(it));
+    });
+  }
+
+  function _markReadyDraftsSeen(itemsArr) {
+    var arr = Array.isArray(itemsArr) ? itemsArr : ((_srState && Array.isArray(_srState.queue)) ? _srState.queue : []);
+    var seenMap = _loadSrSeenReadyMap();
+    var changed = false;
+    arr.forEach(function (it) {
+      if (!_isReadySrItem(it)) return;
+      var k = String(it.id || '');
+      var stamp = _srItemReadyStamp(it);
+      if (k && Number(seenMap[k] || 0) < stamp) {
+        seenMap[k] = stamp;
+        changed = true;
+      }
+    });
+    if (changed) _saveSrSeenReadyMap(seenMap);
+    var srBtn = document.getElementById('btnCaveOpenSpeedRacer');
+    if (srBtn) srBtn.classList.remove('has-new-ready');
+  }
+
+  function _setSrCollapsedPref(collapsed) {
+    window._srUserCollapsed = !!collapsed;
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(_SR_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0');
+      }
+    } catch (_e) {}
+  }
+
+  function _collapseSpeedRacerByUser() {
+    if (_srDeferredAutoOpenTimer) {
+      clearTimeout(_srDeferredAutoOpenTimer);
+      _srDeferredAutoOpenTimer = 0;
+    }
+    _markReadyDraftsSeen();
+    _setSrCollapsedPref(true);
+    _setSpeedRacerExpanded(false);
+  }
+
+  function _openSpeedRacerByUser() {
+    _setSrCollapsedPref(false);
+    _markReadyDraftsSeen();
+    _setSpeedRacerExpanded(true);
+  }
+
+  function _isUserActivelyTypingAnywhere() {
+    var a = document.activeElement;
+    if (a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT' || a.isContentEditable)) {
+      var tp = String(a.type || '').toLowerCase();
+      if (a.tagName !== 'INPUT' || (tp !== 'button' && tp !== 'checkbox' && tp !== 'radio' && tp !== 'submit')) {
+        return true;
+      }
+    }
+    if ((Date.now() - lastKey) < 6000) return true;
+    if ($$('.tile.open').some(function (c) { return !!c._typing || busyIn(c); })) return true;
+    return false;
+  }
+
+  function _triggerAutoOpenForNewReadyDrafts(unseenReady) {
+    if (!Array.isArray(unseenReady) || !unseenReady.length) return;
+    var firstNew = unseenReady[0];
+    var q = (_srState && Array.isArray(_srState.queue)) ? _srState.queue : [];
+    for (var i = 0; i < q.length; i++) {
+      if (q[i] && String(q[i].id || '') === String(firstNew.id || '')) {
+        _srIdx = i;
+        break;
+      }
+    }
+    if (_isUserActivelyTypingAnywhere()) {
+      var srBtn = document.getElementById('btnCaveOpenSpeedRacer');
+      if (srBtn) srBtn.classList.add('has-new-ready');
+      if (!_srDeferredAutoOpenTimer) {
+        _srDeferredAutoOpenTimer = setInterval(function () {
+          var stillUnseen = _pruneAndGetUnseenReadySrItems((_srState && _srState.queue) || []);
+          if (!stillUnseen.length) {
+            clearInterval(_srDeferredAutoOpenTimer);
+            _srDeferredAutoOpenTimer = 0;
+            return;
+          }
+          if (!_isUserActivelyTypingAnywhere()) {
+            clearInterval(_srDeferredAutoOpenTimer);
+            _srDeferredAutoOpenTimer = 0;
+            var calSec = document.getElementById('cal');
+            if (calSec && !calSec.classList.contains('open')) {
+              calSec.classList.add('open');
+              var calTog = document.getElementById('calTog');
+              if (calTog) calTog.textContent = 'Collapse';
+            }
+            _openSpeedRacerByUser();
+            _renderCaveSpeedRacerTile(true, true);
+          }
+        }, 2000);
+      }
+      return;
+    }
+    var calSecNow = document.getElementById('cal');
+    if (calSecNow && !calSecNow.classList.contains('open')) {
+      calSecNow.classList.add('open');
+      var calTogNow = document.getElementById('calTog');
+      if (calTogNow) calTogNow.textContent = 'Collapse';
+    }
+    _openSpeedRacerByUser();
+    _renderCaveSpeedRacerTile(true, true);
+  }
 
   function _markSrDraftClosed(idOrUid) {
     var k = String(idOrUid || '');
@@ -7419,7 +7906,6 @@
             '<span class="comms-badge amber" style="font-weight:800">Draft ' + (_srIdx + 1) + ' of ' + q.length + '</span>' +
             '<span class="comms-badge sky">' + _escH(item.account || 'Institutional 365') + '</span>' +
             '<span class="comms-badge emerald">' + _escH(item.urgency || 'Steward Staged') + '</span>' +
-            '<span class="comms-badge emerald" id="caveSrInstructionRatingBadge" style="border:1px solid rgba(16,185,129,0.55);background:rgba(16,185,129,0.22);color:#ecfdf5;font-weight:800" title="Scribe reads the full incoming email, past correspondence, and rates/executes every instruction before creating a draft">&#127919; Instruction &amp; Email Check: ' + _escH(ratingLbl) + '</span>' +
             '<span class="comms-badge sky" id="caveSrScribeLearnedBadge"' + (learnedNote ? '' : ' hidden') + ' style="border:1px solid rgba(56,189,248,0.55);background:rgba(56,189,248,0.18);color:#e0f2fe;font-weight:750">' + _escH(learnedNote) + '</span>' +
             (item.queued_by ? '<span style="font-size:10.5px;color:#c4b5fd">Queued via ' + _escH(item.queued_by) + '</span>' : '') +
           '</div>' +
@@ -7427,7 +7913,6 @@
             '<button type="button" class="tw-btn" data-sr-nav="-1" title="Previous Draft">&larr; Prev</button>' +
             navPills +
             '<button type="button" class="tw-btn" data-sr-nav="1" title="Next Draft">Next &rarr;</button>' +
-            '<button type="button" class="tw-btn" data-cave-close-speed-racer="1" style="border-color:rgba(244,63,94,0.55);background:rgba(244,63,94,0.14);color:#fda4af;font-weight:750" title="Close the Speed Racer dialogue">&#10005; Close Speed Racer</button>' +
           '</div>' +
         '</div>' +
         '<div class="sr-diff-grid">' +
@@ -7453,15 +7938,15 @@
                 '<button type="button" class="tw-btn' + (item.reply_mode === 'reply_all' ? ' active' : '') + '" data-sr-reply-mode="reply_all" style="font-size:10px;padding:1px 8px;' + (item.reply_mode === 'reply_all' ? 'border-color:#38bdf8;background:rgba(56,189,248,0.18);color:#e0f2fe;font-weight:800' : 'border-color:#334155;color:#cbd5e1') + '">&#8617;&#8617; Reply All</button>' +
                 '<button type="button" class="tw-btn' + (item.reply_mode === 'forward' ? ' active' : '') + '" data-sr-reply-mode="forward" style="font-size:10px;padding:1px 8px;' + (item.reply_mode === 'forward' ? 'border-color:#38bdf8;background:rgba(56,189,248,0.18);color:#e0f2fe;font-weight:800' : 'border-color:#334155;color:#cbd5e1') + '">&#10150; Forward</button>' +
               '</div>' +
-              '<span style="font-size:10px;color:#7dd3fc">&#128214; Unified Address Book active on To, Cc &amp; Bcc</span>' +
+              '<span style="font-size:10px;color:#7dd3fc">&#128214; Click &#9662; on To, Cc or Bcc to inspect full list</span>' +
             '</div>' +
             '<div style="display:grid;grid-template-columns:1fr 0.85fr 0.85fr 1fr;gap:6px">' +
               '<div><label style="font-size:10px;color:#94a3b8;display:block">To</label>' +
-              '<input type="text" id="caveSrToInput" list="caveUnifiedAddressBookList" value="' + _escH(item.to || '') + '" placeholder="recipient@example.org (or type a name)" style="width:100%;box-sizing:border-box;padding:4px 7px;border-radius:5px;border:1px solid #334155;background:#070b12;color:#f8fafc;font-size:11.5px"></div>' +
+              '<div class="sr-recip-wrap"><input type="text" id="caveSrToInput" value="' + _escH(item.to || '') + '" placeholder="recipient@example.org (or type a name)" style="width:100%;box-sizing:border-box;padding:4px 7px;border-radius:5px;border:1px solid #334155;background:#070b12;color:#f8fafc;font-size:11.5px"><button type="button" class="sr-recip-dd-btn" data-recip-dropdown-for="caveSrToInput" title="View complete To recipient list &amp; add from Address Book">&#9662;</button></div></div>' +
               '<div><label style="font-size:10px;color:#94a3b8;display:block">Cc (Optional)</label>' +
-              '<input type="text" id="caveSrCcInput" list="caveUnifiedAddressBookList" value="' + _escH(item.cc || '') + '" placeholder="cc@example.org (optional)" style="width:100%;box-sizing:border-box;padding:4px 7px;border-radius:5px;border:1px solid #334155;background:#070b12;color:#f8fafc;font-size:11.5px"></div>' +
+              '<div class="sr-recip-wrap"><input type="text" id="caveSrCcInput" value="' + _escH(item.cc || '') + '" placeholder="cc@example.org (optional)" style="width:100%;box-sizing:border-box;padding:4px 7px;border-radius:5px;border:1px solid #334155;background:#070b12;color:#f8fafc;font-size:11.5px"><button type="button" class="sr-recip-dd-btn" data-recip-dropdown-for="caveSrCcInput" title="View complete CC recipient list &amp; add from Address Book">&#9662;</button></div></div>' +
               '<div><label style="font-size:10px;color:#94a3b8;display:block">Bcc (Optional)</label>' +
-              '<input type="text" id="caveSrBccInput" list="caveUnifiedAddressBookList" value="' + _escH(item.bcc || '') + '" placeholder="bcc@example.org (blind copy)" style="width:100%;box-sizing:border-box;padding:4px 7px;border-radius:5px;border:1px solid #334155;background:#070b12;color:#f8fafc;font-size:11.5px"></div>' +
+              '<div class="sr-recip-wrap"><input type="text" id="caveSrBccInput" value="' + _escH(item.bcc || '') + '" placeholder="bcc@example.org (blind copy)" style="width:100%;box-sizing:border-box;padding:4px 7px;border-radius:5px;border:1px solid #334155;background:#070b12;color:#f8fafc;font-size:11.5px"><button type="button" class="sr-recip-dd-btn" data-recip-dropdown-for="caveSrBccInput" title="View complete BCC recipient list &amp; add from Address Book">&#9662;</button></div></div>' +
               '<div><label style="font-size:10px;color:#94a3b8;display:block">Subject</label>' +
               '<input type="text" id="caveSrSubjInput" value="' + _escH(item.subject || '') + '" style="width:100%;box-sizing:border-box;padding:4px 7px;border-radius:5px;border:1px solid #334155;background:#070b12;color:#f8fafc;font-size:11.5px"></div>' +
             '</div>' +
@@ -7500,16 +7985,15 @@
             '<span id="caveSrSaveStatus" style="font-size:10.5px;color:#6ee7b7;font-weight:700">' + _escH(saveStatusInit) + '</span>' +
           '</div>' +
           '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
-            '<button type="button" class="tw-btn" id="btnCaveSrSaveModified" style="border-color:rgba(56,189,248,0.55);color:#7dd3fc;font-weight:750" title="Save any modifications you made to To, Cc, Bcc, Subject, or Draft Body">&#128190; Save Modifications</button>' +
             '<button type="button" class="tw-btn" id="btnCaveSrSkip" title="Keep in queue and move to next draft">&#9197; Skip / Later</button>' +
             '<button type="button" class="tw-btn" id="btnCaveSrSpam" data-sr-spam="1" style="border-color:rgba(244,63,94,0.55);background:rgba(244,63,94,0.12);color:#fda4af;font-weight:750" title="Mark sender as Spam and remove draft from Speed Racer">&#128683; Spam</button>' +
             '<button type="button" class="tw-btn" id="btnCaveSrDiscard" style="border-color:rgba(244,63,94,0.55);background:rgba(244,63,94,0.12);color:#fda4af;font-weight:750" title="Cancel and remove this draft from Speed Racer without sending">&#10005; Cancel / Discard</button>' +
             '<button type="button" class="tw-btn done" id="btnCaveSrApproveSend" style="border-color:#10b981;background:rgba(16,185,129,0.24);color:#ecfdf5;font-weight:800;padding:4px 12px">&#10003; Approve &amp; Send</button>' +
-            '<button type="button" class="tw-btn" data-cave-close-speed-racer="1" style="border-color:rgba(244,63,94,0.55);background:rgba(244,63,94,0.14);color:#fda4af;font-weight:750" title="Close the Speed Racer dialogue">&#10005; Close Speed Racer</button>' +
           '</div>' +
         '</div>' +
       '</div>';
     _autoGrowTextarea(document.getElementById('caveSrFeedbackInput'));
+    _syncAllRecipDropdownBadges();
   }
 
   function _setSpeedRacerExpanded(open) {
@@ -7576,22 +8060,19 @@
         }
       }
     }
-    var hasReadyDrafts = Array.isArray(_srState.queue) && _srState.queue.some(function (it) {
-      var st = String((it && it.status) || '').toLowerCase();
-      return st !== 'queued' && st !== 'drafting' && st !== 'error';
-    });
-    if (!Array.isArray(_srState.queue) || _srState.queue.length === 0) {
-      _setSpeedRacerExpanded(false);
-    } else if (hasReadyDrafts && !window._srUserCollapsed && !($('#caveEmailDialoguePane') && !$('#caveEmailDialoguePane').hidden)) {
-      _setSpeedRacerExpanded(true);
-    }
+    var qNow = Array.isArray(_srState.queue) ? _srState.queue : [];
+    var readyItems = qNow.filter(_isReadySrItem);
+    var unseenReady = _pruneAndGetUnseenReadySrItems(qNow);
     _updateScribeQueuePill();
     _renderCaveSpeedRacerTile(!!forceRebuild);
-    var ts = Number(srObj.auto_open_ts || 0);
-    if (ts > _srLastAutoOpenTs) {
-      _srLastAutoOpenTs = ts;
-      window.openCaveSpeedRacer();
+    if (!qNow.length || !readyItems.length) {
+      _setSpeedRacerExpanded(false);
+    } else if (unseenReady.length > 0) {
+      _triggerAutoOpenForNewReadyDrafts(unseenReady);
+    } else if (window._srUserCollapsed) {
+      _setSpeedRacerExpanded(false);
     }
+    _srLastAutoOpenTs = Number(srObj.auto_open_ts || _srLastAutoOpenTs);
   }
 
   window.openCaveSpeedRacer = function (draftId) {
@@ -7605,8 +8086,7 @@
     if (curGrid && curGrid.getAttribute('data-layout') === 'cal') {
       applyCommsLayout('split');
     }
-    window._srUserCollapsed = false;
-    _setSpeedRacerExpanded(true);
+    _openSpeedRacerByUser();
     _renderCaveSpeedRacerTile(false);
     fetch('/api/steward/comms', {
       method: 'POST',
@@ -7618,6 +8098,7 @@
         if (d && d.speed_racer) {
           _srState = _mergeSrStateKeepLocal(d.speed_racer);
           _srLastAutoOpenTs = Number(_srState.auto_open_ts || _srLastAutoOpenTs);
+          _markReadyDraftsSeen(_srState.queue);
         }
         var q = (_srState && Array.isArray(_srState.queue)) ? _srState.queue : [];
         if (draftId) {
@@ -7752,10 +8233,9 @@
     var closeSrBtn = e.target.closest && e.target.closest('[data-cave-close-speed-racer]');
     if (closeSrBtn) {
       e.preventDefault(); e.stopPropagation();
-      window._srUserCollapsed = true;
       var archDrawerClose = document.getElementById('caveSpeedRacerArchiveDrawer');
       if (archDrawerClose) archDrawerClose.hidden = true;
-      _setSpeedRacerExpanded(false);
+      _collapseSpeedRacerByUser();
       receipt('Closed Speed Racer dialogue.');
       return;
     }
@@ -7789,9 +8269,12 @@
       e.preventDefault();
       var body = document.getElementById('caveSpeedRacerBody');
       var nextOpen = body ? body.hidden : true;
-      window._srUserCollapsed = !nextOpen;
-      _setSpeedRacerExpanded(nextOpen);
-      if (nextOpen) _renderCaveSpeedRacerTile(false);
+      if (nextOpen) {
+        _openSpeedRacerByUser();
+        _renderCaveSpeedRacerTile(false);
+      } else {
+        _collapseSpeedRacerByUser();
+      }
       return;
     }
     var srSaveModBtn = e.target.closest && e.target.closest('#btnCaveSrSaveModified');
@@ -7819,8 +8302,7 @@
       var srBodyToggle = document.getElementById('caveSpeedRacerBody');
       if (calWasOpen && srTileToggle && srTileToggle.classList.contains('open') && srBodyToggle && !srBodyToggle.hidden) {
         _flushSpeedRacerAutoSaveNow();
-        window._srUserCollapsed = true;
-        _setSpeedRacerExpanded(false);
+        _collapseSpeedRacerByUser();
         receipt('Closed Speed Racer dialogue.');
       } else {
         window.openCaveSpeedRacer();
@@ -8015,8 +8497,7 @@
           if (d.speed_racer) {
             _srState = _mergeSrStateKeepLocal(d.speed_racer);
             _srIdx = 0;
-            window._srUserCollapsed = false;
-            _setSpeedRacerExpanded(true);
+            _openSpeedRacerByUser();
             _renderCaveSpeedRacerTile(true);
             receipt('\ud83e\udeb6 Scribe read email, thread & AI Cockpit context and drafted response in Speed Racer!');
           }
@@ -8411,8 +8892,7 @@
       if (!_srState.queue.length) {
         var archDiscNow = document.getElementById('caveSpeedRacerArchiveDrawer');
         if (archDiscNow) archDiscNow.hidden = true;
-        window._srUserCollapsed = true;
-        _setSpeedRacerExpanded(false);
+        _collapseSpeedRacerByUser();
       }
       receipt('Removed draft from Speed Racer queue.');
       fetch('/api/steward/comms', {
@@ -8432,8 +8912,7 @@
             if (!remDisc.length) {
               var archDisc = document.getElementById('caveSpeedRacerArchiveDrawer');
               if (archDisc) archDisc.hidden = true;
-              window._srUserCollapsed = true;
-              _setSpeedRacerExpanded(false);
+              _collapseSpeedRacerByUser();
             }
           }
         });
@@ -8491,8 +8970,7 @@
         archDrawerNow.hidden = true;
       }
       if (!_srState.queue.length) {
-        window._srUserCollapsed = true;
-        _setSpeedRacerExpanded(false);
+        _collapseSpeedRacerByUser();
       }
 
       fetch('/api/steward/comms', {
@@ -8567,8 +9045,7 @@
             archDrawer.hidden = true;
           }
           if (!remQ.length) {
-            window._srUserCollapsed = true;
-            _setSpeedRacerExpanded(false);
+            _collapseSpeedRacerByUser();
           }
           var undoBar = document.getElementById('caveSpeedRacerUndoBar');
           var undoTxt = document.getElementById('caveSpeedRacerUndoText');
@@ -8610,8 +9087,7 @@
           if (d && d.speed_racer) {
             _srState = _mergeSrStateKeepLocal(d.speed_racer, true);
             _srIdx = 0;
-            window._srUserCollapsed = false;
-            _setSpeedRacerExpanded(true);
+            _openSpeedRacerByUser();
             _renderCaveSpeedRacerTile(true, true);
             receipt('\u21a9 Undid send — draft restored to Speed Racer queue.');
           }
@@ -8760,10 +9236,16 @@
     var unkBanner = document.getElementById('wlUnknownBanner');
     var unkTxt = document.getElementById('wlUnknownBannerText');
     var hdrCnt = document.getElementById('wlHeaderCounts');
+    var topCnt = document.getElementById('wlTopCountBadge');
+    var topBtn = document.getElementById('btnWlToggleTop');
+    var sec = document.getElementById('caveWorkingListSpine');
     var msg = errMsg || 'The List / Watchlist unreadable (unknown) \u2014 inspect Doctor';
     if (unkBanner) unkBanner.hidden = false;
     if (unkTxt) unkTxt.textContent = msg;
     if (hdrCnt) hdrCnt.textContent = 'Unknown (Store Unreadable)';
+    if (topCnt) topCnt.textContent = '!';
+    if (topBtn) topBtn.classList.add('is-error');
+    if (sec) sec.classList.add('has-unknown-error');
   }
 
   function _wlMutate(op, payload) {
@@ -9205,27 +9687,34 @@
     if (cPer) cPer.textContent = String(activeTiles.filter(function (t) { return t.category === 'Personal'; }).length);
     if (cArc) cArc.textContent = String(archTiles.length);
     if (hdrCnt) hdrCnt.textContent = activeTiles.length + ' Active';
+    var topCntEl = document.getElementById('wlTopCountBadge');
+    if (topCntEl) topCntEl.textContent = String(activeTiles.length);
+    var topToggleBtn = document.getElementById('btnWlToggleTop');
+    var topCheckGlyph = document.getElementById('wlCheckGlyph');
     var secInit = document.getElementById('caveWorkingListSpine');
     var hdrSub = document.getElementById('wlHeaderSubSummary');
     var bodyInit = document.getElementById('wlSpineBody');
-    var colBtnInit = document.getElementById('wlSpineCollapseBtn');
     if (bodyInit) {
       bodyInit.hidden = !_wlSpineIsOpen;
     }
     if (secInit) {
+      secInit.classList.remove('has-unknown-error');
       secInit.classList.toggle('is-collapsed', !_wlSpineIsOpen);
       secInit.classList.toggle('is-open', _wlSpineIsOpen);
       secInit.classList.toggle('open', _wlSpineIsOpen);
       secInit.setAttribute('data-open', _wlSpineIsOpen ? '1' : '0');
     }
+    if (topToggleBtn) {
+      topToggleBtn.classList.remove('is-error');
+      topToggleBtn.setAttribute('aria-expanded', _wlSpineIsOpen ? 'true' : 'false');
+    }
+    if (topCheckGlyph) {
+      topCheckGlyph.innerHTML = _wlSpineIsOpen ? '&#9745;' : '&#9744;';
+    }
     if (hdrSub) {
       hdrSub.textContent = !_wlSpineIsOpen
         ? ('Click to expand ' + activeTiles.length + ' single-line items · ' + archTiles.length + ' Things Done')
         : (activeTiles.length + ' single-line items · ' + archTiles.length + ' Things Done');
-    }
-    if (colBtnInit) {
-      colBtnInit.setAttribute('aria-expanded', _wlSpineIsOpen ? 'true' : 'false');
-      colBtnInit.innerHTML = _wlSpineIsOpen ? '&#9652; Collapse' : ('&#9662; Expand (' + activeTiles.length + ')');
     }
 
     // Keep #theListCompactRow updated in DOM while hidden so collapsing shrinks cleanly to the 1-line header bar
@@ -9267,8 +9756,9 @@
       compactRow.innerHTML = pillsHtml.join('');
     }
 
-    // Keep Chief of Staff synchronized with The List
+    // Keep Chief of Staff synchronized with The List & Top-3 Suggestions
     _syncChiefOfStaffFromTheList();
+    _renderCosSuggestionsPanel(_wlState && _wlState.cos_suggestions);
 
     $$('#wlCatTabs [data-wl-cat]').forEach(function (b) {
       b.classList.toggle('on', b.getAttribute('data-wl-cat') === _wlCatFilter);
@@ -9341,6 +9831,17 @@
         }
         var connRowHtml = chips.length ? ('<div class="wl-substep-conn-row">' + chips.join('') + '</div>') : '';
 
+        var stepAutoEntry = (s.done && s.auto_checked_at && !s.auto_check_confirmed && _wlState && Array.isArray(_wlState.auto_checked))
+          ? _wlState.auto_checked.find(function (ac) {
+              return ac && !ac.confirmed && !ac.undone && String(ac.tile_id || '') === rawTid && String(ac.step_id || '') === String(s.id || '');
+            })
+          : null;
+        var autoReasonLbl = stepAutoEntry && (stepAutoEntry.reason || stepAutoEntry.source)
+          ? ('Steward checked (' + String(stepAutoEntry.reason || stepAutoEntry.source).slice(0, 48) + ')')
+          : 'Steward checked';
+        var autoEntryId = stepAutoEntry ? _escH(stepAutoEntry.id || '') : '';
+        var allDoneAutoNow = !!(stepAutoEntry && stepAutoEntry.all_steps_done);
+
         return (
           '<div class="wl-substep-card' + (s.done ? ' done' : '') + '" data-wl-step-idx="' + sIdx + '">' +
             '<div class="wl-substep-top">' +
@@ -9348,9 +9849,16 @@
                 '<input type="checkbox" data-wl-step-check="' + tid + '" data-wl-step-idx="' + sIdx + '"' + (s.done ? ' checked' : '') + ' style="accent-color:#10b981;cursor:pointer">' +
                 '<span>' + _escH(s.text || '') + '</span>' +
               '</label>' +
-              '<div style="display:inline-flex;align-items:center;gap:4px">' +
+              '<div style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap">' +
                 (s.done && s.auto_checked_at && !s.auto_check_confirmed
-                  ? '<button type="button" class="wl-pill emerald" data-wl-confirm-step-autocheck="' + tid + '" data-wl-step-id="' + _escH(s.id || '') + '" data-wl-step-idx="' + sIdx + '" style="font-size:9.5px;padding:1px 6px;cursor:pointer;border:1px solid rgba(16,185,129,0.5)" title="Auto-checked by Steward \u2014 click to confirm &amp; clear badge, or uncheck box on left to reopen">&#10003; Auto-checked &middot; Confirm</button>'
+                  ? ('<span style="font-size:10px;color:#6ee7b7">' + _escH(autoReasonLbl) + '</span>' +
+                     '<button type="button" class="wl-pill emerald" data-wl-confirm-step-autocheck="' + tid + '" data-wl-step-id="' + _escH(s.id || '') + '" data-wl-step-idx="' + sIdx + '" style="font-size:9.5px;padding:1px 6px;cursor:pointer;border:1px solid rgba(16,185,129,0.5)" title="Keep this step marked Done &amp; clear Steward badge">&#10003; Confirm</button>' +
+                     (allDoneAutoNow && autoEntryId
+                       ? '<button type="button" class="wl-pill emerald" data-wl-confirm-archive-autocheck="' + autoEntryId + '" style="font-size:9.5px;padding:1px 6px;cursor:pointer;border:1px solid rgba(16,185,129,0.65);font-weight:800" title="Confirm done and move this completed item to Things Done">&#10003; Done &amp; Archive</button>'
+                       : '') +
+                     (autoEntryId
+                       ? '<button type="button" class="tw-btn" data-wl-undo-autocheck="' + autoEntryId + '" style="font-size:9.5px;padding:1px 6px" title="Undo Steward auto-check">&#8634; Undo</button>'
+                       : ''))
                   : '') +
                 '<button type="button" class="tw-btn" data-wl-step-conn-toggle="' + tid + '" data-wl-step-idx="' + sIdx + '" style="font-size:10px;padding:1px 6px;color:#94a3b8" title="Link AI Cockpit or Initiative">&#128279; Link</button>' +
                 '<button type="button" class="mini" data-wl-step-del="' + tid + '" data-wl-step-idx="' + sIdx + '" title="Remove step" style="padding:0 5px;font-size:11px">&times;</button>' +
@@ -9463,7 +9971,18 @@
       var goalShortPill = gLbl
         ? ('<span class="wl-pill purple" style="white-space:nowrap;flex-shrink:0;max-width:165px;overflow:hidden;text-overflow:ellipsis" title="Assigned Star Chart Goal/Initiative: ' + _escH(gLbl) + '">&#127775; ' + _escH(String(gLbl).slice(0, 22)) + '</span>')
         : '';
-      var stepPillCls = (totalCount > 0 && doneCount === totalCount) ? 'emerald' : 'sky';
+      var unconfAutoSteps = steps.filter(function (s) {
+        return !!(s && s.done && s.auto_checked_at && !s.auto_check_confirmed);
+      });
+      var stepPillCls = unconfAutoSteps.length
+        ? 'emerald wl-step-autochecked'
+        : ((totalCount > 0 && doneCount === totalCount) ? 'emerald' : 'sky');
+      var stepPillLbl = unconfAutoSteps.length
+        ? ('&#10003; ' + doneCount + '/' + totalCount + ' &middot; +' + unconfAutoSteps.length)
+        : ('&#10003; ' + doneCount + '/' + totalCount);
+      var stepPillTip = unconfAutoSteps.length
+        ? _escH('Steward checked off ' + unconfAutoSteps.length + ' step(s) — click to inspect, confirm, or undo')
+        : _escH(doneCount + ' of ' + totalCount + ' steps done — click to view steps');
 
       return (
         '<article class="wl-tile ' + pCls + (isExp ? ' is-expanded' : '') + (t.done ? ' is-done' : '') + '" data-wl-tile-id="' + tid + '" data-wl-priority="' + pNum + '">' +
@@ -9473,7 +9992,7 @@
             '<span class="wl-pill cat" title="Category">' + _escH(t.category || 'Business') + '</span>' +
             ckShortPill +
             goalShortPill +
-            '<span class="wl-pill ' + stepPillCls + '" style="flex-shrink:0;white-space:nowrap">&#10003; ' + doneCount + '/' + totalCount + '</span>' +
+            '<span class="wl-pill ' + stepPillCls + '" data-wl-step-pill="' + tid + '" title="' + stepPillTip + '" style="flex-shrink:0;white-space:nowrap">' + stepPillLbl + '</span>' +
             '<div class="wl-acts" style="display:inline-flex;align-items:center;gap:4px;flex-shrink:0">' +
               '<button type="button" class="wl-icon-btn" data-wl-move="up" data-wl-id="' + tid + '" title="Move item up">&uarr;</button>' +
               '<button type="button" class="wl-icon-btn" data-wl-move="down" data-wl-id="' + tid + '" title="Move item down">&darr;</button>' +
@@ -9490,7 +10009,8 @@
   function _setTheListSpineOpen(wantOpen, skipSave) {
     var sec = document.getElementById('caveWorkingListSpine');
     var body = document.getElementById('wlSpineBody');
-    var colBtn = document.getElementById('wlSpineCollapseBtn');
+    var topToggleBtn = document.getElementById('btnWlToggleTop');
+    var topCheckGlyph = document.getElementById('wlCheckGlyph');
     var compactRow = document.getElementById('theListCompactRow');
     var openState = typeof wantOpen === 'boolean' ? wantOpen : !_wlSpineIsOpen;
     _wlSpineIsOpen = openState;
@@ -9515,12 +10035,14 @@
       if (openState) sec.setAttribute('open', '');
       else sec.removeAttribute('open');
     }
+    if (topToggleBtn) {
+      topToggleBtn.setAttribute('aria-expanded', openState ? 'true' : 'false');
+    }
+    if (topCheckGlyph) {
+      topCheckGlyph.innerHTML = openState ? '&#9745;' : '&#9744;';
+    }
     var actCnt = ((_wlState && Array.isArray(_wlState.tiles)) ? _wlState.tiles.filter(function(x){return !x.archived;}).length : 0);
     var archCnt = ((_wlState && Array.isArray(_wlState.tiles)) ? _wlState.tiles.filter(function(x){return !!x.archived;}).length : 0);
-    if (colBtn) {
-      colBtn.setAttribute('aria-expanded', openState ? 'true' : 'false');
-      colBtn.innerHTML = openState ? '&#9652; Collapse' : ('&#9662; Expand (' + actCnt + ')');
-    }
     var hdrSub = document.getElementById('wlHeaderSubSummary');
     if (hdrSub) {
       hdrSub.textContent = openState
@@ -9677,7 +10199,7 @@
       _renderWorkingListSpine();
       return;
     }
-    var colBtn = e.target.closest && e.target.closest('#wlSpineCollapseBtn, [data-wl-toggle-spine]');
+    var colBtn = e.target.closest && e.target.closest('[data-wl-toggle-spine]');
     if (colBtn && !e.target.closest('[data-wl-populate-cos], [data-wl-open-things-done]')) {
       e.preventDefault();
       _setTheListSpineOpen();
@@ -10091,12 +10613,26 @@
       _wlMutate('list', {});
     }
   };
-  if (_srState && Array.isArray(_srState.queue) && _srState.queue.length > 0) {
-    _setSpeedRacerExpanded(true);
-  }
+  (function _bootSpeedRacerAndCos() {
+    var qBoot = (_srState && Array.isArray(_srState.queue)) ? _srState.queue : [];
+    var readyBoot = qBoot.filter(_isReadySrItem);
+    var unseenBoot = _pruneAndGetUnseenReadySrItems(qBoot);
+    if (!qBoot.length || !readyBoot.length) {
+      _setSpeedRacerExpanded(false);
+    } else if (unseenBoot.length > 0) {
+      _openSpeedRacerByUser();
+    } else if (window._srUserCollapsed) {
+      _setSpeedRacerExpanded(false);
+    } else {
+      _setSpeedRacerExpanded(true);
+      _markReadyDraftsSeen(readyBoot);
+    }
+    _syncCosExpandedUi();
+  })();
   _setTheListSpineOpen(_wlSpineIsOpen, true);
   _renderCaveSpeedRacerTile();
   _renderWorkingListSpine();
+  _syncAllRecipDropdownBadges();
 
   window._syncCaveAlarmHeaderBtn = function (alarmPrefs) {
     if (!alarmPrefs || typeof alarmPrefs !== 'object') return;

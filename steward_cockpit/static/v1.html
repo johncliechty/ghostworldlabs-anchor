@@ -4,7 +4,8 @@
 <title>Aladdin — AI Cockpit</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/anchor.ico" type="image/x-icon">
-<link rel="stylesheet" href="/static/shared.css?v=20261122fit3">
+<script>try{if(location.search.indexOf("embed=1")!==-1&&localStorage.getItem("anchor_cave_theme")==="light")document.documentElement.setAttribute("data-cave-theme","light");window.addEventListener("message",function(e){if(e&&e.origin===location.origin&&e.data&&e.data.type==="anchor-cave-theme"&&location.search.indexOf("embed=1")!==-1){if(e.data.theme==="light")document.documentElement.setAttribute("data-cave-theme","light");else document.documentElement.removeAttribute("data-cave-theme");}});}catch(_){}</script>
+<link rel="stylesheet" href="/static/shared.css?v=20261124c4">
 </head>
 <body>
 <div class="app appx app3">
@@ -55,11 +56,20 @@
     <iframe class="anvil-takeover-live-frame" data-anvil-frame src="about:blank"></iframe>
   </div>
 
-  <div class="goalbar" data-goalbar title="click to expand or close the goal">
+  <div class="goalbar" data-goalbar title="Click to expand or collapse the full Goal &amp; Kickoff">
     <div class="gline">
       <span class="glabel" data-goallabel>GOAL</span>
       <span class="gbrief" data-goalbrief>…</span>
+      <button type="button" class="cockpit-folder-pill" data-cockpit-folder-pill hidden title="Project folder location on disk — click to copy path">
+        <span class="cfp-ico">📁</span>
+        <code class="cfp-path" data-cockpit-folder-path></code>
+        <span class="cfp-copy" data-cockpit-folder-copy>Copy</span>
+      </button>
       <span class="gcaret">Expand Goal ▸</span>
+    </div>
+    <div class="grecent-line" data-recent-done-row>
+      <span class="grecent-label">RECENTLY DONE</span>
+      <span class="grecent-text" data-recent-done-line>Loading most recent completed work…</span>
     </div>
     <div class="gfull">
       <div class="gkick" data-kickoff></div>
@@ -69,9 +79,6 @@
     </div>
   </div>
 
-  <!-- Row 3: Full-Width Top Approval / Next-Step Line (Matches wave18-cockpit-redesign-mockup.html) -->
-  <section class="top-approval-bar" data-top-approval-bar></section>
-
   <div class="leftcol">
     <div class="plan-grip" data-plangrip role="separator" aria-label="Resize plan" aria-orientation="vertical" tabindex="0"></div>
     <div class="rail">
@@ -80,22 +87,23 @@
         <span class="wpsum" data-wpsum>no map yet</span>
       </button>
       <div class="railhead">
-        <h2 data-plan-head>THE PLAN</h2>
+        <h2 data-plan-head>PLAN</h2>
         <span class="rail-wave-count" data-plan-count></span>
         <button data-railtoggle title="collapse the plan">« Close</button>
       </div>
       <div class="progress" data-progress hidden></div>
       <div class="plan-progress-bar" data-progress-bar><i data-progress-fill style="width:0%"></i></div>
       <div class="plan-error-banner" data-plan-error role="alert" hidden></div>
-      <section class="plan-focus-card" data-plan-focus aria-label="Current Focus and Next Move" hidden></section>
       <section class="plan-proposal-banner" data-plan-proposal aria-label="Steward Proposed Plan Update" hidden></section>
-      <form class="plan-add-bar" data-plan-add autocomplete="off">
-        <input type="text" class="plan-add-input" data-plan-add-title placeholder="+ Add Step…" aria-label="New step title">
-        <input type="text" class="plan-add-goal-input" data-plan-add-goal placeholder="Done when / goal (optional)" aria-label="Step goal or done-when">
-        <button type="submit" class="plan-add-btn" data-plan-add-submit title="Add step to The Plan">+ Add Step</button>
+      <div class="wave-map-root" data-wave-map aria-label="Simplified Wave Map"></div>
+      <section class="plan-focus-card" data-plan-focus aria-label="Current Focus and Next Move" hidden></section>
+      <form class="plan-add-bar" data-plan-add autocomplete="off" hidden>
+        <input type="text" class="plan-add-input" data-plan-add-title placeholder="+ Add Wave…" aria-label="New wave title">
+        <input type="text" class="plan-add-goal-input" data-plan-add-goal placeholder="Done when / goal (optional)" aria-label="Wave goal">
+        <button type="submit" class="plan-add-btn" data-plan-add-submit title="Add wave">+ Wave</button>
       </form>
-      <ul class="steps" data-steps></ul>
-      <div class="fresh" data-fresh></div>
+      <ul class="steps" data-steps hidden></ul>
+      <div class="fresh" data-fresh hidden></div>
       <div class="gaps" data-gaps></div>
       <div class="tool-scout-box" data-tool-scout hidden></div>
     </div>
@@ -149,7 +157,6 @@
           <span data-statetext hidden>…</span>
         </span>
         <div style="display:flex;align-items:center;gap:6px;">
-          <button type="button" data-poincare-toggle2 style="font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid rgba(56,189,248,0.45);background:rgba(56,189,248,0.12);color:#7dd3fc;cursor:pointer" title="Explore this AI Cockpit's interactive Poincaré History & Context Map">🧭 History Map</button>
           <span class="sc-timer-pill" data-statusstamp>Live · 10m cadence</span>
           <button data-statustoggle2 title="collapse">Close »</button>
         </div>
@@ -160,7 +167,7 @@
       <div class="right-scroll-area">
         <div class="pdeliv" data-delivmount></div>
         <div class="pstatus" data-pstatus>
-          <h2 class="pstatushead" hidden>Status <span class="pcount" data-statusstamp></span></h2>
+          <h2 class="pstatushead">⏱ 10-Min Status Summary <span class="pcount" data-statusstamp>Live · 10m cadence</span></h2>
           <div class="platest" data-latest></div>
           <div class="pscroll"></div>
           <details class="prev-status-log earlier-updates-box" data-prev-status-log>
@@ -206,7 +213,9 @@
 <script src="/static/md.js"></script>
 <script src="/static/plate.js"></script>
 <script src="/static/skill-icons.js"></script>
-<script src="/static/shared.js?v=f7fac0ad1590"></script>
+<script src="/static/cockpit-wave-map.js?v=20261124c3"></script>
+<script src="/static/cockpit-deliverable-shelves.js?v=20261124c3"></script>
+<script src="/static/shared.js?v=20261124c3"></script>
 <script>
 const app = document.querySelector(".app");
 const _v1Params = new URLSearchParams(location.search || "");
@@ -604,7 +613,7 @@ function setPoincareTakeover(open) {
   }
 }
 
-document.querySelectorAll("[data-poincare-toggle],[data-poincare-toggle2]").forEach(btn => {
+document.querySelectorAll("[data-poincare-toggle]").forEach(btn => {
   btn.addEventListener("click", () => setPoincareTakeover(true));
 });
 document.querySelectorAll("[data-poincare-return],[data-poincare-return2]").forEach(btn => {

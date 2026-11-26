@@ -1425,7 +1425,13 @@ def handle_get(handler, path, body):
     query = parse_qs(urlsplit(handler.path).query)
     try:
         # The dispatcher hands over the full URI (query included); route on the path alone.
-        if urlsplit(path).path == "/api/provider-setup/login":
+        req_path = urlsplit(path).path
+        if req_path == "/api/provider-setup/detail" or query.get("detail", ["0"])[0] == "1":
+            import provider_detail_view as _pdv
+            out, code = _pdv.get_provider_detail(SERVICE, query.get("family", [None])[0], is_local=local_request(handler))
+            handler._send_json(out, code)
+            return
+        if req_path == "/api/provider-setup/login":
             out = SERVICE.login_status(query.get("id", [None])[0])
         elif query.get("surface_probe", ["0"])[0] == "1" or query.get("catalog_probe", [None])[0]:
             probe_family = query.get("catalog_probe", [None])[0]
@@ -1464,6 +1470,14 @@ def handle_post(handler, path, body):
     path = urlsplit(path).path
     if not handler._steward_same_origin():
         handler._send_json({"ok": False, "error": "Cross-origin provider action refused"}, 403)
+        return
+    if path.endswith(("/probe-mothership", "/adopt-mothership", "/billing-mode")) or (
+        path.endswith("/apply") and isinstance(body, dict) and body.get("detail_action")
+    ):
+        import provider_detail_view as _pdv
+        raw_len = int(getattr(handler, "_draft_raw_len", 0) or handler.headers.get("Content-Length") or 0)
+        out, code = _pdv.handle_detail_post(SERVICE, path, body, is_local=local_request(handler), raw_len=raw_len)
+        handler._send_json(out, code)
         return
     body = body or {}
     try:

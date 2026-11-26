@@ -50,7 +50,9 @@
 
   function arm(win) {              // pages not served with the script get it on every load
     try {
-      if (!win || win.__anchorFrame || !win.document || !win.document.head) return;
+      if (!win || !win.document || !win.document.head) return;
+      if (window.__anchorLowSpec) win.__anchorLowSpec = true;
+      if (win.__anchorFrame) return;
       var s = win.document.createElement("script");
       s.src = FRAME_SCRIPT;
       win.document.head.appendChild(s);
@@ -1001,18 +1003,48 @@
   window.ANCHOR_APP = api;
 
   var verPill = document.getElementById("bar-version-pill");
-  if (verPill) {
-    verPill.addEventListener("click", function () { api.open("/setup", "", window); });
+  var lowSpecPinned = (typeof window.ANCHOR_KEEP_LIVE === "number" && window.ANCHOR_KEEP_LIVE >= 0);
+  function applyLowSpecMode(enabled) {
+    window.__anchorLowSpec = !!enabled;
+    if (enabled && !lowSpecPinned) {
+      KEEP_LIVE = 2;
+      KEEP_LIVE_NARROW = 1;
+      DROP_AFTER_MS = 6000;
+    }
+    tiles.forEach(function (t) {
+      try { if (t.frame && t.frame.contentWindow) t.frame.contentWindow.__anchorLowSpec = !!enabled; } catch (_e) {}
+    });
+  }
+  function refreshVersionAndUpdatePill() {
+    if (!verPill) return;
     fetch("/api/system/version", { credentials: "same-origin" }).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
-      if (d && d.display_version) verPill.textContent = d.display_version;
-    }).catch(function () {});
-    fetch("/api/system/check_update", { credentials: "same-origin" }).then(function (r) { return r.ok ? r.json() : null; }).then(function (u) {
-      if (u && u.update_available) {
+      if (!d) return;
+      if (typeof d.low_spec_mode === "boolean") applyLowSpecMode(d.low_spec_mode);
+      if (d.update_ready_for_reload && d.update_status && d.update_status.applied_version) {
         verPill.classList.add("update-ready");
-        verPill.textContent = (u.display_version || "v1.5.2") + " \u2b06 Update";
-        verPill.title = "Update available (" + (u.remote_version || u.remote_head || "latest") + ") \u00b7 Click to open Setup & Update";
+        verPill.textContent = "v" + d.update_status.applied_version + " \u2b06 Updated";
+        verPill.title = "Anchor v" + d.update_status.applied_version + " downloaded automatically \u00b7 Click to open Setup or reload";
+      } else if (d.display_version && !verPill.classList.contains("update-ready")) {
+        verPill.textContent = d.display_version;
       }
     }).catch(function () {});
+    fetch("/api/system/check_update", { credentials: "same-origin" }).then(function (r) { return r.ok ? r.json() : null; }).then(function (u) {
+      if (!u) return;
+      if (u.update_ready_for_reload && u.applied_version) {
+        verPill.classList.add("update-ready");
+        verPill.textContent = "v" + u.applied_version + " \u2b06 Updated";
+        verPill.title = "Anchor v" + u.applied_version + " installed automatically \u00b7 Click to open Setup or reload";
+      } else if (u.update_available) {
+        verPill.classList.add("update-ready");
+        verPill.textContent = (u.display_version || "v1.5.5") + " \u2b06 Update";
+        verPill.title = "Update available (" + (u.remote_version || u.latest_version || "latest") + ") \u00b7 Click to open Setup & Update";
+      }
+    }).catch(function () {});
+  }
+  if (verPill) {
+    verPill.addEventListener("click", function () { api.open("/setup", "", window); });
+    refreshVersionAndUpdatePill();
+    setInterval(function () { if (!document.hidden) refreshVersionAndUpdatePill(); }, 900000);
   }
 
   // A cockpit's work continues after its pane/frame is left. Poll only its scoped read-only
@@ -1036,9 +1068,10 @@
     el.classList.toggle("ready", !!(f && f.ready));
     el.title = displayTitle(t) + "; " + word + (f && f.reason ? "; " + f.reason : "");
   }
-  var feedbackBusy = false, feedbackAgain = false;
-  function refreshFeedback() {
+  var feedbackBusy = false, feedbackAgain = false, feedbackTick = 0;
+  function refreshFeedback(immediate) {
     if (document.hidden || !window.AnchorCockpitFeedback) return;
+    if (!immediate && window.__anchorLowSpec && ((++feedbackTick) % 2 === 1)) return;
     if (feedbackBusy) { feedbackAgain = true; return; }
     feedbackBusy = true;
     var list = tiles.filter(cockpitTarget), next = 0;
@@ -1064,8 +1097,8 @@
     });
   }
   setInterval(refreshFeedback,5000);
-  document.addEventListener("visibilitychange",function () { if (!document.hidden) refreshFeedback(); });
-  window.addEventListener("focus",refreshFeedback);
+  document.addEventListener("visibilitychange",function () { if (!document.hidden) refreshFeedback(true); });
+  window.addEventListener("focus",function () { refreshFeedback(true); });
 
   // ---------- start: the Cave alone ----------
   var cave = { id: "cave", kind: "cave", url: CAVE_URL, title: "Cave of Wonders", name: "", opener: null, frame: null };

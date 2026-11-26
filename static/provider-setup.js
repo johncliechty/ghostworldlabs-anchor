@@ -155,12 +155,14 @@
 
   function text(tag,value,className){const node=document.createElement(tag);node.textContent=value;if(className)node.className=className;return node;}
   function button(title,action){const b=text('button',title);b.type='button';b.onclick=()=>Promise.resolve(action()).catch(error=>{$('setup-message').textContent=error.message;$('setup-message').className='error';});return b;}
-  function section(name){
-    ['host','providers','chart','comms'].forEach(s=>{const el=$('setup-section-'+s);if(el)el.hidden=s!==name;});
-    document.querySelectorAll('.setup-steps [data-section]').forEach(b=>{if(b.dataset.section===name)b.setAttribute('aria-current','step');else b.removeAttribute('aria-current');});
-    document.querySelectorAll('.cave-rail-stage').forEach(b=>b.classList.toggle('is-active',b.getAttribute('data-rail-section')===name));
-    if(name==='chart' && !w3Synced){syncWave3FromServer();}
-    if(name==='comms'){syncWave9CommsFromServer();}
+  function section(name,fromDetail){
+    const navSec=name==='provider-detail'?'providers':name;
+    ['host','providers','provider-detail','chart','comms'].forEach(s=>{const el=$('setup-section-'+s);if(el)el.hidden=s!==name;});
+    document.querySelectorAll('.setup-steps [data-section]').forEach(b=>{if(b.dataset.section===navSec)b.setAttribute('aria-current','step');else b.removeAttribute('aria-current');});
+    document.querySelectorAll('.cave-rail-stage').forEach(b=>b.classList.toggle('is-active',b.getAttribute('data-rail-section')===navSec));
+    if(name==='provider-detail' && !fromDetail && window.AnchorProviderDetail)window.AnchorProviderDetail.open(family,section);
+    if(name==='chart' && !w3Synced)syncWave3FromServer();
+    if(name==='comms')syncWave9CommsFromServer();
   }
   function leave(){
     if(window.parent!==window){
@@ -257,7 +259,8 @@
         meter.append(fill);
         card.append(meter);
       }
-      card.onclick=()=>{family=key;connectionId=null;drawAccounts();drawDetail();};
+      card.dataset.providerFamily=key;
+      card.onclick=()=>{family=key;connectionId=null;if(window.AnchorProviderDetail)window.AnchorProviderDetail.open(key,section);else{drawAccounts();drawDetail();}};
       matrix.append(card);
     });
   }
@@ -1281,8 +1284,8 @@
     const reqSecMsg=String(event.data.section||'').trim();
     api.request('/api/provider-setup').then(value=>{
       render(value);
-      if(reqSecMsg && ['host','providers','chart','comms'].includes(reqSecMsg))section(reqSecMsg);
-      else if(reqFam)section('providers');
+      if(reqSecMsg && ['host','providers','provider-detail','chart','comms'].includes(reqSecMsg))section(reqSecMsg);
+      else if(reqFam)section('provider-detail');
     }).catch(error=>$('setup-message').textContent=error.message);
   });
   function invokeSetupWindowControl(act){
@@ -1336,143 +1339,88 @@
       ['rail-link-gwl-admin','rail-link-sandbox-walkthrough','open-onboard-sandbox-btn'].forEach(id=>{if($(id))$(id).hidden=true;});
     }
   }).catch(()=>{});
-  if($('host-sec-dual-enabled')){
-    $('host-sec-dual-enabled').onchange=()=>{if($('host-sec-2fa-box'))$('host-sec-2fa-box').hidden=!$('host-sec-dual-enabled').checked;};
-  }
-  if($('btn-host-sec-toggle-token')){
-    $('btn-host-sec-toggle-token').onclick=()=>{const el=$('host-sec-anchor-token');if(el)el.type=(el.type==='password'?'text':'password');};
-  }
-  if($('btn-host-sec-copy-token')){
-    $('btn-host-sec-copy-token').onclick=async()=>{
-      const el=$('host-sec-anchor-token');
-      if(el && el.value){
-        try{await navigator.clipboard.writeText(el.value);if($('host-sec-feedback'))$('host-sec-feedback').textContent='✓ Copied ANCHOR_TOKEN to clipboard.';}
-        catch(e){el.type='text';el.select();if($('host-sec-feedback'))$('host-sec-feedback').textContent='Token revealed — press Ctrl+C to copy.';}
-      }
-    };
-  }
-  if($('btn-host-sec-regen-token')){
-    $('btn-host-sec-regen-token').onclick=async()=>{
-      const res=await api.request('/api/onboard-wizard/action',{action:'regenerate_anchor_token'});
-      if($('host-sec-anchor-token'))$('host-sec-anchor-token').value=res.anchor_token || '';
-      if($('host-sec-feedback'))$('host-sec-feedback').textContent='✓ Rotated Mother Ship ANCHOR_TOKEN ('+(res.anchor_token_masked||'updated')+').';
-    };
-  }
-  if($('btn-host-sec-save')){
-    $('btn-host-sec-save').onclick=async()=>{
-      const res=await api.request('/api/onboard-wizard/action',{
-        action:'save_security_credentials',
-        username:$('host-sec-username')?$('host-sec-username').value:'',
-        contact_email:$('host-sec-contact-email')?$('host-sec-contact-email').value:'',
-        password:$('host-sec-password')?$('host-sec-password').value:'',
-        dual_auth_enabled:Boolean($('host-sec-dual-enabled') && $('host-sec-dual-enabled').checked),
-        dual_auth_method:$('host-sec-dual-method')?$('host-sec-dual-method').value:'totp_authenticator',
-        anchor_token:$('host-sec-anchor-token')?$('host-sec-anchor-token').value:''
-      });
-      if($('host-sec-password'))$('host-sec-password').value='';
-      if(res && res.profile)hydrateHostSecurityCard(res.profile);
-      if($('host-sec-feedback'))$('host-sec-feedback').textContent='✓ Saved Mother Ship username, contact email, password hash (OS Vault), 2FA & ANCHOR_TOKEN.';
-    };
-  }
+  if($('host-sec-dual-enabled'))$('host-sec-dual-enabled').onchange=()=>{if($('host-sec-2fa-box'))$('host-sec-2fa-box').hidden=!$('host-sec-dual-enabled').checked;};
+  if($('btn-host-sec-toggle-token'))$('btn-host-sec-toggle-token').onclick=()=>{const el=$('host-sec-anchor-token');if(el)el.type=(el.type==='password'?'text':'password');};
+  if($('btn-host-sec-copy-token'))$('btn-host-sec-copy-token').onclick=async()=>{
+    const el=$('host-sec-anchor-token'); if(!el||!el.value)return;
+    try{await navigator.clipboard.writeText(el.value);if($('host-sec-feedback'))$('host-sec-feedback').textContent='✓ Copied ANCHOR_TOKEN to clipboard.';}
+    catch(e){el.type='text';el.select();if($('host-sec-feedback'))$('host-sec-feedback').textContent='Token revealed — press Ctrl+C to copy.';}
+  };
+  if($('btn-host-sec-regen-token'))$('btn-host-sec-regen-token').onclick=async()=>{
+    const res=await api.request('/api/onboard-wizard/action',{action:'regenerate_anchor_token'});
+    if($('host-sec-anchor-token'))$('host-sec-anchor-token').value=res.anchor_token||'';
+    if($('host-sec-feedback'))$('host-sec-feedback').textContent='✓ Rotated Mother Ship ANCHOR_TOKEN ('+(res.anchor_token_masked||'updated')+').';
+  };
+  if($('btn-host-sec-save'))$('btn-host-sec-save').onclick=async()=>{
+    const res=await api.request('/api/onboard-wizard/action',{action:'save_security_credentials',username:$('host-sec-username')?$('host-sec-username').value:'',contact_email:$('host-sec-contact-email')?$('host-sec-contact-email').value:'',password:$('host-sec-password')?$('host-sec-password').value:'',dual_auth_enabled:Boolean($('host-sec-dual-enabled')&&$('host-sec-dual-enabled').checked),dual_auth_method:$('host-sec-dual-method')?$('host-sec-dual-method').value:'totp_authenticator',anchor_token:$('host-sec-anchor-token')?$('host-sec-anchor-token').value:''});
+    if($('host-sec-password'))$('host-sec-password').value='';
+    if(res&&res.profile)hydrateHostSecurityCard(res.profile);
+    if($('host-sec-feedback'))$('host-sec-feedback').textContent='✓ Saved Mother Ship username, contact email, password hash (OS Vault), 2FA & ANCHOR_TOKEN.';
+  };
   function renderMothershipRegistryList(motherships){
-    const el=$('ms-registry-list');
-    if(!el)return;
-    if(!Array.isArray(motherships) || !motherships.length){
-      el.textContent='No Mother Ships registered yet.';
-      return;
-    }
-    el.innerHTML=motherships.map(m=>{
-      const id=String(m.id||'');
-      const owner=String(m.owner||'Collaborator');
-      const pseudo=String(m.pseudonym||'Steward');
-      const plat=String(m.platform||'windows');
-      const url=String(m.tailscale_url||m.local_url||'');
-      const ver=String(m.version_installed||'unknown');
-      return '<div style="padding:6px 10px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">'
-        +'<div><strong>'+owner+' ('+pseudo+')</strong> · <code>'+id+'</code> · <span class="muted">'+plat+'</span> · <code>'+url+'</code></div>'
-        +'<span class="w3-badge">v'+ver.replace(/^v/,'')+'</span>'
-        +'</div>';
-    }).join('');
+    const el=$('ms-registry-list'); if(!el)return;
+    if(!Array.isArray(motherships)||!motherships.length){el.textContent='No Mother Ships registered yet.';return;}
+    el.innerHTML=motherships.map(m=>'<div style="padding:6px 10px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;"><div><strong>'+String(m.owner||'Collaborator')+' ('+String(m.pseudonym||'Steward')+')</strong> · <code>'+String(m.id||'')+'</code> · <span class="muted">'+String(m.platform||'windows')+'</span> · <code>'+String(m.tailscale_url||m.local_url||'')+'</code></div><span class="w3-badge">v'+String(m.version_installed||'unknown').replace(/^v/,'')+'</span></div>').join('');
   }
   function loadMothershipUpdateAndRegistry(){
     fetch('/api/system/version',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).then(v=>{
-      if(v && v.display_version){
+      if(!v)return;
+      if(v.display_version){
         if($('setup-version-pill'))$('setup-version-pill').textContent=v.display_version;
         if($('ms-current-version-label'))$('ms-current-version-label').textContent=v.display_version;
         if($('ms-update-status-msg'))$('ms-update-status-msg').textContent='Installed version: '+v.display_version+' ('+(v.platform||'host')+')';
       }
+      if($('chk-ms-auto-pull-updates')&&typeof v.auto_pull_updates==='boolean')$('chk-ms-auto-pull-updates').checked=v.auto_pull_updates;
+      if($('chk-ms-low-spec-mode')&&typeof v.low_spec_mode==='boolean')$('chk-ms-low-spec-mode').checked=v.low_spec_mode;
+      if($('ms-hw-summary')&&v.hardware_profile){const hw=v.hardware_profile;$('ms-hw-summary').textContent=(hw.total_ram_gb?hw.total_ram_gb+' GB RAM · ':'')+(hw.cpu_cores||2)+' CPU cores'+(hw.low_spec_recommended?' · recommended for this laptop':'');}
+      if(v.license_status){
+        const acc=!!v.license_status.accepted,badge=$('setup-gwl-license-badge');
+        if(badge){badge.textContent=acc?'✓ Accepted ('+(v.license_status.license_id||'GWL-v1')+')':'Acknowledgement Required';badge.className='w3-badge '+(acc?'w3-badge-emerald':'w3-badge-amber');}
+        if($('chk-setup-gwl-license'))$('chk-setup-gwl-license').checked=acc;
+        if($('setup-gwl-license-msg')&&acc&&v.license_status.accepted_at)$('setup-gwl-license-msg').textContent='Recorded '+v.license_status.accepted_at+' ('+(v.license_status.token_id||'signed receipt')+')';
+      }
     }).catch(()=>{});
-    fetch('/api/mothership/registry',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).then(reg=>{
-      if(reg && Array.isArray(reg.motherships))renderMothershipRegistryList(reg.motherships);
-    }).catch(()=>{});
+    fetch('/api/mothership/registry',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).then(reg=>{if(reg&&Array.isArray(reg.motherships))renderMothershipRegistryList(reg.motherships);}).catch(()=>{});
   }
   loadMothershipUpdateAndRegistry();
-  if($('btn-ms-check-update')){
-    $('btn-ms-check-update').onclick=async()=>{
-      const msg=$('ms-update-status-msg');
-      if(msg)msg.textContent='Checking GitHub & Mother Ship registry for updates…';
-      try{
-        const res=await fetch('/api/system/check_update',{credentials:'same-origin'}).then(r=>r.json());
-        if(res.update_available){
-          if(msg)msg.textContent='⬆ Update available: '+(res.remote_version||res.remote_head||'latest')+' (installed: '+(res.display_version||'v1.5.2')+'). Click Pull & Update to install.';
-        }else{
-          if(msg)msg.textContent='✓ Up to date ('+(res.display_version||'v1.5.2')+').';
-        }
-      }catch(e){if(msg)msg.textContent='Check failed: '+e.message;}
-    };
+  async function saveUpdateAndHardwarePrefs(){
+    const msg=$('ms-update-status-msg');
+    try{
+      const res=await api.request('/api/system/update_preferences',{auto_pull_updates:$('chk-ms-auto-pull-updates')?$('chk-ms-auto-pull-updates').checked:true,low_spec_mode:$('chk-ms-low-spec-mode')?$('chk-ms-low-spec-mode').checked:false});
+      if(res&&res.ok&&msg)msg.textContent='✓ Saved preferences: Auto-Update '+(res.link.auto_pull_updates?'ON':'OFF')+' · Low-Memory Mode '+(res.link.low_spec_mode?'ON':'OFF')+'.';
+    }catch(e){if(msg)msg.textContent='Could not save preference: '+e.message;}
   }
-  if($('btn-ms-pull-update')){
-    $('btn-ms-pull-update').onclick=async()=>{
-      const msg=$('ms-update-status-msg');
-      if(msg)msg.textContent='Pulling latest Anchor update & syncing 20 bundled Foundry skills…';
-      try{
-        const res=await api.request('/api/system/pull_update',{restart_service:false});
-        if(res && res.display_version){
-          if($('setup-version-pill'))$('setup-version-pill').textContent=res.display_version;
-          if($('ms-current-version-label'))$('ms-current-version-label').textContent=res.display_version;
-        }
-        if(msg)msg.textContent=(res && res.ok ? '✓ Updated to '+(res.display_version||'latest')+' ('+(res.method||'git')+') · Skills synced: '+((res.skills_synced||[]).length) : '⚠ Update status: '+((res&&res.errors||[]).join('; ')||'check logs'));
-      }catch(e){if(msg)msg.textContent='Update failed: '+e.message;}
-    };
-  }
-  if($('btn-ms-register')){
-    $('btn-ms-register').onclick=async()=>{
-      const msg=$('ms-update-status-msg');
-      try{
-        const res=await api.request('/api/mothership/register',{
-          owner:$('ms-reg-owner')?$('ms-reg-owner').value:'',
-          pseudonym:$('ms-reg-pseudonym')?$('ms-reg-pseudonym').value:'',
-          tailscale_url:$('ms-reg-tailscale-url')?$('ms-reg-tailscale-url').value:'',
-          platform:$('ms-reg-platform')?$('ms-reg-platform').value:'windows',
-          github_repo:$('ms-reg-github-repo')?$('ms-reg-github-repo').value:'GWL-John/Anchor'
-        });
-        if(res && res.registry && Array.isArray(res.registry.motherships))renderMothershipRegistryList(res.registry.motherships);
-        if(msg)msg.textContent='✓ Registered Mother Ship ('+((res.entry&&res.entry.id)||'saved')+') in mothership_registry.json.';
-      }catch(e){if(msg)msg.textContent='Registration failed: '+e.message;}
-    };
-  }
-  if($('btn-ms-push-update')){
-    $('btn-ms-push-update').onclick=async()=>{
-      const msg=$('ms-update-status-msg');
-      if(msg)msg.textContent='Pushing latest Anchor release to registered Mother Ships…';
-      try{
-        const res=await api.request('/api/mothership/push_update',{push_git_first:true});
-        const count=Array.isArray(res.notified)?res.notified.length:0;
-        if(msg)msg.textContent='✓ Push completed (v'+(res.version||'1.5.2')+') · Processed '+count+' registered Mother Ship(s).';
-        loadMothershipUpdateAndRegistry();
-      }catch(e){if(msg)msg.textContent='Push failed: '+e.message;}
-    };
-  }
+  if($('chk-ms-auto-pull-updates'))$('chk-ms-auto-pull-updates').onchange=saveUpdateAndHardwarePrefs;
+  if($('chk-ms-low-spec-mode'))$('chk-ms-low-spec-mode').onchange=saveUpdateAndHardwarePrefs;
+  if($('btn-setup-accept-license'))$('btn-setup-accept-license').onclick=async()=>{
+    const chk=$('chk-setup-gwl-license'),lmsg=$('setup-gwl-license-msg');
+    if(!chk||!chk.checked){if(lmsg)lmsg.textContent='⚠ Please check the Ghost World Labs License box first.';return;}
+    const handle=($('ms-reg-pseudonym')&&$('ms-reg-pseudonym').value.trim())||($('host-sec-username')&&$('host-sec-username').value.trim())||'Collaborator';
+    try{const res=await api.request('/api/website/license/accept',{pseudonym_or_handle:handle,accepted_non_resale:true,intended_use:'personal_or_research'});if(res&&res.ok){if(lmsg)lmsg.textContent='✓ Ghost World Labs License acknowledged ('+res.token_id+')!';loadMothershipUpdateAndRegistry();}}catch(e){if(lmsg)lmsg.textContent='License save failed: '+e.message;}
+  };
+  if($('btn-ms-check-update'))$('btn-ms-check-update').onclick=async()=>{
+    const msg=$('ms-update-status-msg');if(msg)msg.textContent='Checking GitHub & Mother Ship registry for updates…';
+    try{const res=await fetch('/api/system/check_update',{credentials:'same-origin'}).then(r=>r.json());if(msg)msg.textContent=res.update_available?'⬆ Update available: '+(res.remote_version||res.remote_head||'latest')+' (installed: '+(res.display_version||'v1.5.5')+'). Click Pull & Update to install.':'✓ Up to date ('+(res.display_version||'v1.5.5')+').';}catch(e){if(msg)msg.textContent='Check failed: '+e.message;}
+  };
+  if($('btn-ms-pull-update'))$('btn-ms-pull-update').onclick=async()=>{
+    const msg=$('ms-update-status-msg');if(msg)msg.textContent='Pulling latest Anchor update & syncing 20 bundled Foundry skills…';
+    try{const res=await api.request('/api/system/pull_update',{restart_service:false});if(res&&res.display_version){if($('setup-version-pill'))$('setup-version-pill').textContent=res.display_version;if($('ms-current-version-label'))$('ms-current-version-label').textContent=res.display_version;}if(msg)msg.textContent=(res&&res.ok?'✓ Updated to '+(res.display_version||'latest')+' ('+(res.method||'git')+') · Skills synced: '+((res.skills_synced||[]).length):'⚠ Update status: '+((res&&res.errors||[]).join('; ')||'check logs'));}catch(e){if(msg)msg.textContent='Update failed: '+e.message;}
+  };
+  if($('btn-ms-register'))$('btn-ms-register').onclick=async()=>{
+    const msg=$('ms-update-status-msg');
+    try{const res=await api.request('/api/mothership/register',{owner:$('ms-reg-owner')?$('ms-reg-owner').value:'',pseudonym:$('ms-reg-pseudonym')?$('ms-reg-pseudonym').value:'',tailscale_url:$('ms-reg-tailscale-url')?$('ms-reg-tailscale-url').value:'',platform:$('ms-reg-platform')?$('ms-reg-platform').value:'windows',github_repo:$('ms-reg-github-repo')?$('ms-reg-github-repo').value:'GWL-John/Anchor'});if(res&&res.registry&&Array.isArray(res.registry.motherships))renderMothershipRegistryList(res.registry.motherships);if(msg)msg.textContent='✓ Registered Mother Ship ('+((res.entry&&res.entry.id)||'saved')+') in mothership_registry.json.';}catch(e){if(msg)msg.textContent='Registration failed: '+e.message;}
+  };
+  if($('btn-ms-push-update'))$('btn-ms-push-update').onclick=async()=>{
+    const msg=$('ms-update-status-msg');if(msg)msg.textContent='Pushing latest Anchor release to registered Mother Ships…';
+    try{const res=await api.request('/api/mothership/push_update',{push_git_first:true});const count=Array.isArray(res.notified)?res.notified.length:0;if(msg)msg.textContent='✓ Push completed (v'+(res.version||'1.5.5')+') · Processed '+count+' registered Mother Ship(s).';loadMothershipUpdateAndRegistry();}catch(e){if(msg)msg.textContent='Push failed: '+e.message;}
+  };
   renderWave3All();
   const reqSec=new URLSearchParams(location.search).get('section') || (location.hash?location.hash.replace('#',''):'');
   api.request('/api/provider-setup').then(value=>{
     render(value);
     if(!userPickedSection){
-      if(reqSec && ['host','providers','chart','comms'].includes(reqSec)){
-        section(reqSec);
-      }else{
-        section(value.host.configured?'providers':'host');
-      }
+      if(reqSec && ['host','providers','provider-detail','chart','comms'].includes(reqSec))section(reqSec);
+      else section(value.host.configured?'providers':'host');
     }
     const conns=Array.isArray(value && value.connections)?value.connections:[];
     if(!coldAutoRefreshDone && conns.length>0 && conns.every(c=>!c.observed_at && c.auth==='unknown')){

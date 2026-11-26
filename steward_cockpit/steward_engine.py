@@ -570,6 +570,11 @@ CONTRACT = (
     "label completed/approved flagship products 'FINAL: <Clean Human Title>' so they appear in Final Deliverables; and "
     "label all intermediate/building-block items (Gandalf reads, Beta-Reader reports, plans, logs, earlier drafts) "
     "'Supporting - <Title>' so they fold into the Supplemental drawer (never ask John to click 'Mark All Done'); "
+    "(iii-b) ACTIVE INSTRUCTION PRESENTATION, HIERARCHICAL FINAL CURATION & WAVE ITERATIONS (.ecgberht/deliverable-batches.json & .ecgberht/wave-state.json): "
+    "actively think through and curate BOTH what is presented under Most Recent (grouped by John's Last Instruction and Instruction Before Last — only primary human-facing products, never scratch/intermediate files) "
+    "AND the hierarchical summary and category organization of Final Deliverables (`steward_plan.py curate-deliverables --headline \"...\" --summary \"...\" --groups-json '[...]' --supersedes-json '{...}' --recent-paths \"...\"`). "
+    "Use explicit revision suffixes (v1->v2->v3, _r1->_r2, Rev A->Rev B) in the same folder/stem or `--supersedes-json` so older Final versions auto-retire into Earlier Deliverables while multi-format siblings (.pdf/.pptx/.docx) stay paired; "
+    "keep roadmap.json steps[] flat and track per-step round (1..99) + recommended_action ('iterate'|'advance'|null) in wave-state.json; "
     "(iv) ACCURATE BOTTOM STATUS WINDOW: the engine deterministically synthesizes .ecgberht/status-summary.json and "
     ".ecgberht/status_card.json from strip.json, roadmap.json, overview.json, and live jobs."
 )
@@ -1894,6 +1899,15 @@ def _plan_state_capsule(cdir, query: str = "") -> str:
             )
         else:
             lines.append(f"- Unaccepted For-Review Deliverables: 0 awaiting review ({len(final_items)} final)")
+        shelves_cap = deliv.get("shelves") if isinstance(deliv, dict) and isinstance(deliv.get("shelves"), dict) else {}
+        hier_cap = deliv.get("deliverable_hierarchy") if isinstance(deliv, dict) and isinstance(deliv.get("deliverable_hierarchy"), dict) else {}
+        rec_b = shelves_cap.get("most_recent_batches") or []
+        if rec_b:
+            lines.append("- Most Recent by Instruction: " + " | ".join(f"{b.get('rank_label')}: \"{str(b.get('instruction_excerpt') or '')[:48]}\" ({b.get('file_count', 0)} files)" for b in rec_b[:2]))
+        cats_cap = hier_cap.get("categories") or []
+        exec_cap = hier_cap.get("executive_summary") or {}
+        if cats_cap:
+            lines.append("- Final Hierarchy (" + ("Steward-curated" if exec_cap.get("steward_authored") else "auto-grouped — refine via `steward_plan.py curate-deliverables` when finals change") + "): " + ", ".join(f"{c.get('title')} ({c.get('unit_count', 0)} units)" for c in cats_cap[:5]))
 
     if pstate.get("ok") and (Path(cdir) / "ECGBERHT.md").is_file():
         try:
